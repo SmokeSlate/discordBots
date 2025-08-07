@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from typing import Optional
+from io import BytesIO
 
 # Load token from file
 def load_token():
@@ -72,6 +73,14 @@ def has_mod_permissions_or_override(interaction: discord.Interaction) -> bool:
             interaction.user.guild_permissions.ban_members or
             interaction.user.guild_permissions.kick_members)
 
+def load_pinned_messages():
+    """Load pinned messages from file"""
+    try:
+        with open('pinned_messages.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
@@ -83,6 +92,29 @@ async def on_ready():
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+# Re-pin messages when bot starts (optional feature)
+async def repin_messages():
+    """Re-pin messages that should stay at bottom"""
+    pinned_data = load_pinned_messages()
+    for pin_id, data in pinned_data.items():
+        try:
+            guild = bot.get_guild(int(data['guild_id']))
+            if guild:
+                channel = guild.get_channel(int(data['channel_id']))
+                if channel:
+                    # Check if pinned message still exists
+                    try:
+                        await channel.fetch_message(int(pin_id))
+                    except discord.NotFound:
+                        # Message was deleted, remove from tracking
+                        del pinned_data[pin_id]
+        except:
+            continue
+    
+    # Save cleaned data
+    with open('pinned_messages.json', 'w') as f:
+        json.dump(pinned_data, f, indent=2)
 
 # SNIPPET COMMANDS
 @bot.tree.command(name="addsnippet", description="Add a new snippet")
@@ -226,8 +258,8 @@ async def on_message(message):
             pass
 
 # PIN COMMANDS
-@bot.tree.command(name="setpin", description="Pin a message to the channel")
-@app_commands.describe(message_id="The ID of the message to pin")
+@bot.tree.command(name="setpin", description="Pin a message to stay at the bottom of the channel")
+@app_commands.describe(message_id="The ID of the message to pin at the bottom")
 async def set_pin(interaction: discord.Interaction, message_id: str):
     if not has_permissions_or_override(interaction):
         await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
@@ -235,20 +267,99 @@ async def set_pin(interaction: discord.Interaction, message_id: str):
     
     try:
         msg_id = int(message_id)
-        message = await interaction.channel.fetch_message(msg_id)
-        await message.pin()
-        await interaction.response.send_message("✅ Message pinned successfully!")
+        original_message = await interaction.channel.fetch_message(msg_id)
+        
+        # Get the message content and author info
+        content = original_message.content
+        author = original_message.author
+        embeds = original_message.embeds
+        attachments = original_message.attachments
+        
+        # Create embed for pinned message if it doesn't already have one
+        if not embeds and not content:
+            content = "*[No text content]*"
+        
+        # Send new message at bottom with original content
+        files = []
+        if attachments:
+            for attachment in attachments:
+                try:
+                    file_data = await attachment.read()
+                    files.append(discord.File(fp=BytesIO(file_data), filename=attachment.filename))
+                except:
+                    pass  # Skip if can't download attachment
+        
+        # Create pinned message at bottom
+        pin_content = f"📌 **PINNED MESSAGE** from {author.mention}:\n\n{content}" if content else f"📌 **PINNED MESSAGE** from {author.mention}:"
+        
+        if embeds:
+            pinned_msg = await interaction.channel.send(content=pin_content, embeds=embeds, files=files)
+        else:
+            pinned_msg = await interaction.channel.send(content=pin_content, files=files)
+        
+        # Store pinned message info for tracking
+        guild_id = str(interaction.guild.id)
+        channel_id = str(interaction.channel.id)
+        
+        # Save to a pinned messages file
+        pinned_data = {
+            'original_id': msg_id,
+            'pinned_id': pinned_msg.id,
+            'channel_id': channel_id,
+            'guild_id': guild_id
+        }
+        
+        # Load existing pinned messages
+        try:
+            with open('pinned_messages.json', 'r') as f:
+                pinned_messages = json.load(f)
+        except FileNotFoundError:
+            pinned_messages = {}
+        
+        # Add new pinned message
+        pinned_messages[str(pinned_msg.id)] = pinned_data
+        
+        # Save updated data
+        with open('pinned_messages.json', 'w') as f:
+            json.dump(pinned_messages, f, indent=2)
+        
+        await interaction.response.send_message("✅ Message pinned at the bottom of the channel!")
+        
     except ValueError:
         await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
     except discord.NotFound:
         await interaction.response.send_message("❌ Message not found!", ephemeral=True)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to pin messages!", ephemeral=True)
-    except discord.HTTPException:
-        await interaction.response.send_message("❌ Failed to pin message. Channel might have reached pin limit (50).", ephemeral=True)
+        await interaction.response.send_message("❌ I don't have permission to send messages!", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"❌ Failed to pin message: {e}", ephemeral=True)
 
-@bot.tree.command(name="removepin", description="Remove a pin from a message")
-@app_commands.describe(message_id="The ID of the message to unpin")
+@bot.tree.command(name="removepin", description="Remove a pinned message from the bottom")
+async def list_pins(interaction: discord.Interaction):
+    try:
+        with open('pinned_messages.json', 'r') as f:
+            pinned_messages = json.load(f)
+    except FileNotFoundError:
+        await interaction.response.send_message("❌ No pinned messages found!", ephemeral=True)
+        return
+    
+    channel_pins = []
+    for pin_id, data in pinned_messages.items():
+        if int(data['channel_id']) == interaction.channel.id:
+            channel_pins.append(f"• Message ID: `{pin_id}`")
+    
+    if not channel_pins:
+        await interaction.response.send_message("❌ No pinned messages in this channel!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="📌 Pinned Messages in this Channel",
+        description="\n".join(channel_pins),
+        color=discord.Color.blue()
+    )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+@app_commands.describe(message_id="The ID of the pinned message to remove")
 async def remove_pin(interaction: discord.Interaction, message_id: str):
     if not has_permissions_or_override(interaction):
         await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
@@ -256,17 +367,66 @@ async def remove_pin(interaction: discord.Interaction, message_id: str):
     
     try:
         msg_id = int(message_id)
-        message = await interaction.channel.fetch_message(msg_id)
-        await message.unpin()
-        await interaction.response.send_message("✅ Message unpinned successfully!")
+        
+        # Load pinned messages data
+        try:
+            with open('pinned_messages.json', 'r') as f:
+                pinned_messages = json.load(f)
+        except FileNotFoundError:
+            await interaction.response.send_message("❌ No pinned messages found!", ephemeral=True)
+            return
+        
+        # Check if this is a pinned message
+        if str(msg_id) in pinned_messages:
+            # Delete the pinned message
+            message = await interaction.channel.fetch_message(msg_id)
+            await message.delete()
+            
+            # Remove from tracking
+            del pinned_messages[str(msg_id)]
+            
+            # Save updated data
+            with open('pinned_messages.json', 'w') as f:
+                json.dump(pinned_messages, f, indent=2)
+            
+            await interaction.response.send_message("✅ Pinned message removed!")
+        else:
+            await interaction.response.send_message("❌ This is not a tracked pinned message!", ephemeral=True)
+            
     except ValueError:
         await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
     except discord.NotFound:
         await interaction.response.send_message("❌ Message not found!", ephemeral=True)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to unpin messages!", ephemeral=True)
-    except discord.HTTPException:
-        await interaction.response.send_message("❌ Failed to unpin message!", ephemeral=True)
+        await interaction.response.send_message("❌ I don't have permission to delete messages!", ephemeral=True)
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"❌ Failed to remove pinned message: {e}", ephemeral=True)
+
+@bot.tree.command(name="listpins", description="List all pinned messages in this channel")
+async def list_pins(interaction: discord.Interaction):
+    try:
+        with open('pinned_messages.json', 'r') as f:
+            pinned_messages = json.load(f)
+    except FileNotFoundError:
+        await interaction.response.send_message("❌ No pinned messages found!", ephemeral=True)
+        return
+    
+    channel_pins = []
+    for pin_id, data in pinned_messages.items():
+        if int(data['channel_id']) == interaction.channel.id:
+            channel_pins.append(f"• Message ID: `{pin_id}`")
+    
+    if not channel_pins:
+        await interaction.response.send_message("❌ No pinned messages in this channel!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="📌 Pinned Messages in this Channel",
+        description="\n".join(channel_pins),
+        color=discord.Color.blue()
+    )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # REACTION ROLES COMMANDS
 @bot.tree.command(name="reactionrole", description="Add a reaction role to a message")
@@ -567,7 +727,7 @@ async def help_mod(interaction: discord.Interaction):
     
     embed.add_field(
         name="📌 Pin Commands",
-        value="`/setpin <message_id>` - Pin a message\n`/removepin <message_id>` - Unpin a message",
+        value="`/setpin <message_id>` - Pin a message at bottom\n`/removepin <message_id>` - Remove pinned message\n`/listpins` - List pinned messages",
         inline=False
     )
     
