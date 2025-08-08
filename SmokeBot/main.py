@@ -1001,6 +1001,7 @@ async def clear_messages(interaction: discord.Interaction, amount: int):
             return await interaction.response.send_message("❌ Cannot delete more than 100 messages at once!", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         deleted = await interaction.channel.purge(limit=amount)
+        sleep(5)
         await interaction.followup.send(f"✅ Deleted {len(deleted)} messages!", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don't have permission to delete messages!", ephemeral=True)
