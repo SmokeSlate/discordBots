@@ -137,7 +137,7 @@ async def add_snippet(interaction: discord.Interaction, trigger: str, content: s
     snippets[guild_id][trigger] = content
     save_snippets()
     
-    await interaction.response.send_message(f"✅ Snippet `!{trigger}` created successfully!")
+    await interaction.response.send_message(f"✅ Snippet `!{trigger}` created successfully!", ephemeral=True)
 
 @bot.tree.command(name="removesnippet", description="Remove a snippet")
 @app_commands.describe(trigger="The trigger word to remove (without !)")
@@ -153,7 +153,7 @@ async def remove_snippet(interaction: discord.Interaction, trigger: str):
     if guild_id in snippets and trigger in snippets[guild_id]:
         del snippets[guild_id][trigger]
         save_snippets()
-        await interaction.response.send_message(f"✅ Snippet `!{trigger}` removed successfully!")
+        await interaction.response.send_message(f"✅ Snippet `!{trigger}` removed successfully!", ephemeral=True)
     else:
         await interaction.response.send_message(f"❌ Snippet `!{trigger}` not found!", ephemeral=True)
 
@@ -187,7 +187,7 @@ async def list_snippets(interaction: discord.Interaction):
             inline=False
         )
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="editsnippet", description="Edit an existing snippet")
 @app_commands.describe(
@@ -206,7 +206,7 @@ async def edit_snippet(interaction: discord.Interaction, trigger: str, content: 
     if guild_id in snippets and trigger in snippets[guild_id]:
         snippets[guild_id][trigger] = content
         save_snippets()
-        await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated successfully!")
+        await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated successfully!", ephemeral=True)
     else:
         await interaction.response.send_message(f"❌ Snippet `!{trigger}` not found!", ephemeral=True)
 
@@ -490,7 +490,7 @@ async def reaction_role(interaction: discord.Interaction, message_id: str, emoji
         }
         save_reaction_roles()
         
-        await interaction.response.send_message(f"✅ Reaction role set! React with {emoji} to get the {role.name} role.")
+        await interaction.response.send_message(f"✅ Reaction role set! React with {emoji} to get the {role.name} role.", ephemeral=True)
     except ValueError:
         await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
     except discord.NotFound:
@@ -516,7 +516,7 @@ async def remove_reaction_role(interaction: discord.Interaction, message_id: str
         if key in reaction_roles:
             del reaction_roles[key]
             save_reaction_roles()
-            await interaction.response.send_message("✅ Reaction role removed!")
+            await interaction.response.send_message("✅ Reaction role removed!", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Reaction role not found!", ephemeral=True)
     except ValueError:
@@ -536,7 +536,7 @@ async def timeout_member(interaction: discord.Interaction, member: discord.Membe
     
     try:
         await member.timeout(discord.utils.utcnow() + discord.timedelta(minutes=duration), reason=reason)
-        await interaction.response.send_message(f"✅ {member.mention} has been timed out for {duration} minutes. Reason: {reason}")
+        await interaction.response.send_message(f"✅ {member.mention} has been timed out for {duration} minutes. Reason: {reason}", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to timeout members!", ephemeral=True)
     except discord.HTTPException as e:
@@ -554,7 +554,7 @@ async def untimeout_member(interaction: discord.Interaction, member: discord.Mem
     
     try:
         await member.timeout(None, reason=reason)
-        await interaction.response.send_message(f"✅ {member.mention} timeout has been removed. Reason: {reason}")
+        await interaction.response.send_message(f"✅ {member.mention} timeout has been removed. Reason: {reason}", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to manage timeouts!", ephemeral=True)
     except discord.HTTPException as e:
@@ -572,7 +572,7 @@ async def kick_member(interaction: discord.Interaction, member: discord.Member, 
     
     try:
         await member.kick(reason=reason)
-        await interaction.response.send_message(f"✅ {member.mention} has been kicked. Reason: {reason}")
+        await interaction.response.send_message(f"✅ {member.mention} has been kicked. Reason: {reason}", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to kick members!", ephemeral=True)
     except discord.HTTPException as e:
@@ -590,7 +590,7 @@ async def ban_member(interaction: discord.Interaction, member: discord.Member, r
     
     try:
         await member.ban(reason=reason)
-        await interaction.response.send_message(f"✅ {member.mention} has been banned. Reason: {reason}")
+        await interaction.response.send_message(f"✅ {member.mention} has been banned. Reason: {reason}", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to ban members!", ephemeral=True)
     except discord.HTTPException as e:
@@ -610,7 +610,7 @@ async def unban_member(interaction: discord.Interaction, user_id: str, reason: s
         user_id_int = int(user_id)
         user = await bot.fetch_user(user_id_int)
         await interaction.guild.unban(user, reason=reason)
-        await interaction.response.send_message(f"✅ {user.mention} has been unbanned. Reason: {reason}")
+        await interaction.response.send_message(f"✅ {user.mention} has been unbanned. Reason: {reason}", ephemeral=True)
     except ValueError:
         await interaction.response.send_message("❌ Invalid user ID!", ephemeral=True)
     except discord.NotFound:
@@ -630,9 +630,9 @@ async def set_slowmode(interaction: discord.Interaction, seconds: int):
     try:
         await interaction.channel.edit(slowmode_delay=seconds)
         if seconds == 0:
-            await interaction.response.send_message("✅ Slowmode disabled!")
+            await interaction.response.send_message("✅ Slowmode disabled!", ephemeral=True)
         else:
-            await interaction.response.send_message(f"✅ Slowmode set to {seconds} seconds!")
+            await interaction.response.send_message(f"✅ Slowmode set to {seconds} seconds!", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to manage channels!", ephemeral=True)
     except discord.HTTPException as e:
@@ -651,7 +651,7 @@ async def add_role(interaction: discord.Interaction, member: discord.Member, rol
     
     try:
         await member.add_roles(role, reason=reason)
-        await interaction.response.send_message(f"✅ Added {role.name} role to {member.mention}!")
+        await interaction.response.send_message(f"✅ Added {role.name} role to {member.mention}!", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to manage roles!", ephemeral=True)
     except discord.HTTPException as e:
@@ -670,7 +670,7 @@ async def remove_role(interaction: discord.Interaction, member: discord.Member, 
     
     try:
         await member.remove_roles(role, reason=reason)
-        await interaction.response.send_message(f"✅ Removed {role.name} role from {member.mention}!")
+        await interaction.response.send_message(f"✅ Removed {role.name} role from {member.mention}!", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to manage roles!", ephemeral=True)
     except discord.HTTPException as e:
@@ -789,7 +789,7 @@ async def help_mod(interaction: discord.Interaction):
         inline=False
     )
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Run the bot
 if __name__ == "__main__":
