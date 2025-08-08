@@ -1101,7 +1101,7 @@ async def clear_messages(
         summary_bits.append(f"**Before ID:** `{ends_before}`")
     summary_bits.append(f"**Scanned:** up to {scan_limit}")
 
-    await interaction.followup.send("🧹 " + " • ".join(summary_bits), ephemeral=True)
+    await interaction.followup.send("🧹 " + " • ".join(summary_bits))
 # =====================================================
 # Help Command
 # =====================================================
