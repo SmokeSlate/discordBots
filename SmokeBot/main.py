@@ -30,6 +30,7 @@ ADMIN_OVERRIDE_ID = 823654955025956895
 # Data storage
 reaction_roles = {}
 snippets = {}
+ticket_data = {}
 
 def save_reaction_roles():
     """Save reaction roles to file"""
@@ -58,6 +59,20 @@ def load_snippets():
             snippets = json.load(f)
     except FileNotFoundError:
         snippets = {}
+
+def save_ticket_data():
+    """Save ticket data to file"""
+    with open('ticket_data.json', 'w') as f:
+        json.dump(ticket_data, f, indent=2)
+
+def load_ticket_data():
+    """Load ticket data from file"""
+    global ticket_data
+    try:
+        with open('ticket_data.json', 'r') as f:
+            ticket_data = json.load(f)
+    except FileNotFoundError:
+        ticket_data = {}
 
 def has_permissions_or_override(interaction: discord.Interaction) -> bool:
     """Check if user has admin permissions or is the override user"""
@@ -209,6 +224,332 @@ async def edit_snippet(interaction: discord.Interaction, trigger: str, content: 
         await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated successfully!", ephemeral=True)
     else:
         await interaction.response.send_message(f"❌ Snippet `!{trigger}` not found!", ephemeral=True)
+
+# TICKET SYSTEM
+class TicketCategorySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="🛠️ Technical Support",
+                description="Get help with technical issues",
+                emoji="🛠️",
+                value="tech_support"
+            ),
+            discord.SelectOption(
+                label="❓ General Questions",
+                description="Ask general questions",
+                emoji="❓",
+                value="general_question"
+            ),
+            discord.SelectOption(
+                label="🚨 Report Issue",
+                description="Report a problem or bug",
+                emoji="🚨",
+                value="report_issue"
+            ),
+            discord.SelectOption(
+                label="💡 Feature Request",
+                description="Suggest a new feature",
+                emoji="💡",
+                value="feature_request"
+            ),
+            discord.SelectOption(
+                label="👥 Staff Application",
+                description="Apply to join the staff team",
+                emoji="👥",
+                value="staff_application"
+            ),
+            discord.SelectOption(
+                label="📋 Other",
+                description="Something else not listed above",
+                emoji="📋",
+                value="other"
+            )
+        ]
+        super().__init__(placeholder="Choose a ticket category...", options=options, min_values=1, max_values=1)
+    
+    async def callback(self, interaction: discord.Interaction):
+        category_names = {
+            "tech_support": "🛠️ Technical Support",
+            "general_question": "❓ General Questions", 
+            "report_issue": "🚨 Report Issue",
+            "feature_request": "💡 Feature Request",
+            "staff_application": "👥 Staff Application",
+            "other": "📋 Other"
+        }
+        
+        selected_category = self.values[0]
+        category_display = category_names.get(selected_category, "Unknown")
+        
+        # Check if user already has an open ticket
+        guild_id = str(interaction.guild.id)
+        user_id = str(interaction.user.id)
+        
+        if guild_id in ticket_data:
+            for thread_id, data in ticket_data[guild_id].items():
+                if data['user_id'] == user_id and data['status'] == 'open':
+                    thread = interaction.guild.get_thread(int(thread_id))
+                    if thread:
+                        await interaction.response.send_message(
+                            f"❌ You already have an open ticket: {thread.mention}", 
+                            ephemeral=True
+                        )
+                        return
+        
+        # Create private thread
+        try:
+            thread_name = f"{category_display} - {interaction.user.display_name}"
+            thread = await interaction.channel.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                reason=f"Ticket created by {interaction.user}"
+            )
+            
+            # Add user to thread
+            await thread.add_user(interaction.user)
+            
+            # Store ticket data
+            if guild_id not in ticket_data:
+                ticket_data[guild_id] = {}
+            
+            ticket_data[guild_id][str(thread.id)] = {
+                'user_id': user_id,
+                'category': selected_category,
+                'status': 'open',
+                'created_at': discord.utils.utcnow().isoformat(),
+                'channel_id': str(interaction.channel.id)
+            }
+            save_ticket_data()
+            
+            # Send welcome message in thread
+            embed = discord.Embed(
+                title=f"🎫 New Ticket - {category_display}",
+                description=f"Hello {interaction.user.mention}! Thank you for creating a ticket.\n\n"
+                           f"**Category:** {category_display}\n"
+                           f"**Status:** Open\n\n"
+                           f"Please describe your issue or question in detail. A staff member will assist you shortly!",
+                color=discord.Color.green()
+            )
+            
+            view = TicketControlView()
+            await thread.send(embed=embed, view=view)
+            
+            await interaction.response.send_message(
+                f"✅ Ticket created! {thread.mention}", 
+                ephemeral=True
+            )
+            
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I don't have permission to create threads!", 
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            await interaction.response.send_message(
+                f"❌ Failed to create ticket: {e}", 
+                ephemeral=True
+            )
+
+class TicketMenuView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketCategorySelect())
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if user has permission to close (ticket owner or staff)
+        guild_id = str(interaction.guild.id)
+        thread_id = str(interaction.channel.id)
+        
+        if guild_id not in ticket_data or thread_id not in ticket_data[guild_id]:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+        
+        ticket_info = ticket_data[guild_id][thread_id]
+        is_ticket_owner = str(interaction.user.id) == ticket_info['user_id']
+        is_staff = has_mod_permissions_or_override(interaction)
+        
+        if not (is_ticket_owner or is_staff):
+            await interaction.response.send_message("❌ You don't have permission to close this ticket!", ephemeral=True)
+            return
+        
+        # Close the ticket
+        ticket_data[guild_id][thread_id]['status'] = 'closed'
+        ticket_data[guild_id][thread_id]['closed_at'] = discord.utils.utcnow().isoformat()
+        ticket_data[guild_id][thread_id]['closed_by'] = str(interaction.user.id)
+        save_ticket_data()
+        
+        # Update embed
+        embed = discord.Embed(
+            title="🔒 Ticket Closed",
+            description=f"This ticket has been closed by {interaction.user.mention}.\n"
+                       f"Closed at: <t:{int(discord.utils.utcnow().timestamp())}:f>",
+            color=discord.Color.red()
+        )
+        
+        await interaction.response.send_message(embed=embed)
+        
+        # Archive the thread after a short delay
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.edit(archived=True, locked=True)
+        except discord.Forbidden:
+            pass
+    
+    @discord.ui.button(label="📋 Add Note", style=discord.ButtonStyle.secondary, custom_id="add_note")
+    async def add_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_mod_permissions_or_override(interaction):
+            await interaction.response.send_message("❌ Only staff can add notes to tickets!", ephemeral=True)
+            return
+        
+        modal = TicketNoteModal()
+        await interaction.response.send_modal(modal)
+
+class TicketNoteModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Add Ticket Note")
+    
+    note = discord.ui.TextInput(
+        label="Note",
+        placeholder="Enter your note here...",
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="📋 Staff Note",
+            description=self.note.value,
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Added by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        
+        await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="ticket", description="Create a ticket menu")
+async def create_ticket_menu(interaction: discord.Interaction):
+    if not has_permissions_or_override(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🎫 Support Tickets",
+        description="Need help? Create a support ticket by selecting a category below!\n\n"
+                   "**Available Categories:**\n"
+                   "🛠️ **Technical Support** - Get help with technical issues\n"
+                   "❓ **General Questions** - Ask general questions\n"
+                   "🚨 **Report Issue** - Report a problem or bug\n"
+                   "💡 **Feature Request** - Suggest a new feature\n"
+                   "👥 **Staff Application** - Apply to join the staff team\n"
+                   "📋 **Other** - Something else not listed above\n\n"
+                   "*Your ticket will be created as a private thread that only you and staff can see.*",
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text="Select a category from the dropdown menu below")
+    
+    view = TicketMenuView()
+    await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name="ticketstats", description="View ticket statistics")
+async def ticket_stats(interaction: discord.Interaction):
+    if not has_mod_permissions_or_override(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        return
+    
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in ticket_data or not ticket_data[guild_id]:
+        await interaction.response.send_message("❌ No ticket data found for this server!", ephemeral=True)
+        return
+    
+    tickets = ticket_data[guild_id]
+    total_tickets = len(tickets)
+    open_tickets = sum(1 for t in tickets.values() if t['status'] == 'open')
+    closed_tickets = sum(1 for t in tickets.values() if t['status'] == 'closed')
+    
+    # Count by category
+    categories = {}
+    for ticket in tickets.values():
+        category = ticket['category']
+        categories[category] = categories.get(category, 0) + 1
+    
+    category_text = ""
+    category_names = {
+        "tech_support": "🛠️ Technical Support",
+        "general_question": "❓ General Questions",
+        "report_issue": "🚨 Report Issue", 
+        "feature_request": "💡 Feature Request",
+        "staff_application": "👥 Staff Application",
+        "other": "📋 Other"
+    }
+    
+    for cat, count in categories.items():
+        cat_name = category_names.get(cat, cat)
+        category_text += f"{cat_name}: {count}\n"
+    
+    embed = discord.Embed(
+        title="🎫 Ticket Statistics",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="📊 Overview", value=f"**Total Tickets:** {total_tickets}\n**Open:** {open_tickets}\n**Closed:** {closed_tickets}", inline=False)
+    
+    if category_text:
+        embed.add_field(name="📋 By Category", value=category_text, inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="listtickets", description="List all open tickets")
+async def list_tickets(interaction: discord.Interaction):
+    if not has_mod_permissions_or_override(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        return
+    
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in ticket_data:
+        await interaction.response.send_message("❌ No tickets found for this server!", ephemeral=True)
+        return
+    
+    open_tickets = []
+    category_names = {
+        "tech_support": "🛠️ Technical Support",
+        "general_question": "❓ General Questions",
+        "report_issue": "🚨 Report Issue",
+        "feature_request": "💡 Feature Request", 
+        "staff_application": "👥 Staff Application",
+        "other": "📋 Other"
+    }
+    
+    for thread_id, data in ticket_data[guild_id].items():
+        if data['status'] == 'open':
+            thread = interaction.guild.get_thread(int(thread_id))
+            if thread:
+                user = bot.get_user(int(data['user_id']))
+                category = category_names.get(data['category'], data['category'])
+                user_name = user.display_name if user else "Unknown User"
+                
+                created_timestamp = int(discord.utils.parse_time(data['created_at']).timestamp())
+                open_tickets.append(f"{thread.mention} - {category}\n👤 {user_name} • <t:{created_timestamp}:R>")
+    
+    if not open_tickets:
+        await interaction.response.send_message("✅ No open tickets found!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🎫 Open Tickets",
+        description="\n\n".join(open_tickets[:10]),  # Limit to 10 to avoid embed limits
+        color=discord.Color.green()
+    )
+    
+    if len(open_tickets) > 10:
+        embed.set_footer(text=f"Showing 10 of {len(open_tickets)} open tickets")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # SNIPPET MESSAGE HANDLER & PIN REPOSTING
 @bot.event
@@ -751,6 +1092,12 @@ async def help_mod(interaction: discord.Interaction):
         title="🛡️ Bot Commands",
         description="Here are all available slash commands:",
         color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="🎫 Ticket System",
+        value="`/ticket` - Create ticket menu\n`/listtickets` - List open tickets\n`/ticketstats` - View ticket statistics",
+        inline=False
     )
     
     embed.add_field(
