@@ -991,23 +991,117 @@ async def remove_role(interaction: discord.Interaction, member: discord.Member, 
     except discord.HTTPException as e:
         await interaction.response.send_message(f"❌ Failed to remove role: {e}", ephemeral=True)
 
-@bot.tree.command(name="clear", description="Delete a specified number of messages")
-@app_commands.describe(amount="Number of messages to delete (max 100)")
-async def clear_messages(interaction: discord.Interaction, amount: int):
+@bot.tree.command(name="clear", description="Delete messages with filters")
+@app_commands.describe(
+    amount="How many messages to delete (target count)",
+    from_user="Only delete messages from this user",
+    contains="Only delete messages containing this text (case-insensitive)",
+    starts_after="Start AFTER this message ID (exclusive, newer than)",
+    ends_before="Stop BEFORE this message ID (exclusive, older than)",
+    include_bots="Also delete bot messages (default: false)",
+    only_bots="Delete only bot messages (overrides include_bots)",
+    attachments_only="Delete only messages that have attachments",
+    role="Only delete messages from members with this role",
+    scan_limit="How many recent messages to scan (default: amount*10, max 5000)"
+)
+async def clear_messages(
+    interaction: discord.Interaction,
+    amount: int,
+    from_user: Optional[discord.Member] = None,
+    contains: Optional[str] = None,
+    starts_after: Optional[str] = None,
+    ends_before: Optional[str] = None,
+    include_bots: Optional[bool] = False,
+    only_bots: Optional[bool] = False,
+    attachments_only: Optional[bool] = False,
+    role: Optional[discord.Role] = None,
+    scan_limit: Optional[int] = None,
+):
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-    try:
-        if amount > 100:
-            return await interaction.response.send_message("❌ Cannot delete more than 100 messages at once!", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
-        deleted = await interaction.channel.purge(limit=amount)
-        sleep(0.1)
-        await interaction.followup.send(f"✅ Deleted {len(deleted)} messages!", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I don't have permission to delete messages!", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"❌ Failed to delete messages: {e}", ephemeral=True)
 
+    if amount <= 0:
+        return await interaction.response.send_message("❌ Amount must be a positive number.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+
+    before_msg = None
+    after_msg = None
+    try:
+        if ends_before:
+            before_msg = await interaction.channel.fetch_message(int(ends_before))
+    except (ValueError, discord.NotFound):
+        return await interaction.followup.send("❌ `ends_before` must be a valid message ID in this channel.", ephemeral=True)
+    try:
+        if starts_after:
+            after_msg = await interaction.channel.fetch_message(int(starts_after))
+    except (ValueError, discord.NotFound):
+        return await interaction.followup.send("❌ `starts_after` must be a valid message ID in this channel.", ephemeral=True)
+
+    if scan_limit is None:
+        scan_limit = min(max(amount * 10, amount), 5000)
+    else:
+        scan_limit = max(1, min(int(scan_limit), 5000))
+
+    counter = {"n": 0}
+    contains_lower = contains.lower() if contains else None
+
+    def check(m: discord.Message) -> bool:
+        if m.pinned:
+            return False
+        if only_bots and not m.author.bot:
+            return False
+        if not only_bots and not include_bots and m.author.bot:
+            return False
+        if from_user and m.author.id != from_user.id:
+            return False
+        if role:
+            member = interaction.guild.get_member(m.author.id)
+            if not member or role not in member.roles:
+                return False
+        if attachments_only and len(m.attachments) == 0:
+            return False
+        if contains_lower and contains_lower not in (m.content or "").lower():
+            return False
+        if counter["n"] >= amount:
+            return False
+        counter["n"] += 1
+        return True
+
+    try:
+        deleted_messages = await interaction.channel.purge(
+            limit=scan_limit,
+            check=check,
+            before=before_msg,
+            after=after_msg,
+            bulk=True
+        )
+    except discord.Forbidden:
+        return await interaction.followup.send("❌ I don't have permission to delete messages!", ephemeral=True)
+    except discord.HTTPException as e:
+        return await interaction.followup.send(f"❌ Failed to delete messages: {e}", ephemeral=True)
+
+    # Summary
+    summary_bits = [f"**Deleted:** {len(deleted_messages)}"]
+    if from_user:
+        summary_bits.append(f"**From:** {from_user.mention}")
+    if contains:
+        summary_bits.append(f"**Contains:** `{contains}`")
+    if only_bots:
+        summary_bits.append("**Only bots:** yes")
+    elif include_bots:
+        summary_bits.append("**Include bots:** yes")
+    if attachments_only:
+        summary_bits.append("**Attachments only:** yes")
+    if role:
+        summary_bits.append(f"**Role:** {role.mention}")
+    if starts_after:
+        summary_bits.append(f"**After ID:** `{starts_after}`")
+    if ends_before:
+        summary_bits.append(f"**Before ID:** `{ends_before}`")
+    summary_bits.append(f"**Scanned:** up to {scan_limit}")
+
+    await interaction.followup.send("🧹 " + " • ".join(summary_bits), ephemeral=True)
 # =====================================================
 # Help Command
 # =====================================================
