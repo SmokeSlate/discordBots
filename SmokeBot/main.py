@@ -1,26 +1,28 @@
+# =====================================================
+# Discord Bot
+# - Custom ticket categories (JSON storage + slash cmds)
+# - No "used /ticket" banner (ephemeral confirmations)
+# - Pins, reaction roles, moderation, help
+# - Snippet system (static & dynamic with placeholders)
+# - Snippet migration to new JSON format
+# =====================================================
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
 import json
 import os
+import re
 from typing import Optional
-from io import BytesIO
 from datetime import datetime, timedelta
 
-# ------------- Utilities & Boot -------------
+# =====================================================
+# Utility functions for data handling
+# =====================================================
 
-# Load token from file
-def load_token():
-    try:
-        with open('token.txt', 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        print("Error: token.txt file not found!")
-        return None
-
-# Ensure data files exist directory-wise (same folder is fine)
 def read_json(path, default_factory):
+    """Read JSON file, creating it with default content if missing."""
     try:
         with open(path, 'r') as f:
             return json.load(f)
@@ -31,10 +33,26 @@ def read_json(path, default_factory):
         return data
 
 def write_json(path, data):
+    """Write JSON to disk with pretty formatting."""
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
-# Bot configuration
+# =====================================================
+# Token Loader
+# =====================================================
+
+def load_token():
+    try:
+        with open('token.txt', 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print("Error: token.txt not found!")
+        return None
+
+# =====================================================
+# Bot Configuration
+# =====================================================
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -42,54 +60,90 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Special user ID with override permissions
 ADMIN_OVERRIDE_ID = 823654955025956895
 
-# Data storage
 reaction_roles = {}
-snippets = {}
 ticket_data = {}
+snippets = {}  # unified format after migration
 
-def save_reaction_roles():
-    with open('reaction_roles.json', 'w') as f:
-        json.dump(reaction_roles, f, indent=2)
-
-def load_reaction_roles():
-    global reaction_roles
-    reaction_roles = read_json('reaction_roles.json', {})
-
-def save_snippets():
-    with open('snippets.json', 'w') as f:
-        json.dump(snippets, f, indent=2)
-
-def load_snippets():
-    global snippets
-    snippets = read_json('snippets.json', {})
-
-def save_ticket_data():
-    with open('ticket_data.json', 'w') as f:
-        json.dump(ticket_data, f, indent=2)
-
-def load_ticket_data():
-    global ticket_data
-    ticket_data = read_json('ticket_data.json', {})
+# =====================================================
+# Permissions Checkers
+# =====================================================
 
 def has_permissions_or_override(interaction: discord.Interaction) -> bool:
-    return (interaction.user.id == ADMIN_OVERRIDE_ID or 
+    return (interaction.user.id == ADMIN_OVERRIDE_ID or
             interaction.user.guild_permissions.administrator or
             interaction.user.guild_permissions.manage_messages)
 
 def has_mod_permissions_or_override(interaction: discord.Interaction) -> bool:
-    return (interaction.user.id == ADMIN_OVERRIDE_ID or 
+    return (interaction.user.id == ADMIN_OVERRIDE_ID or
             interaction.user.guild_permissions.administrator or
             interaction.user.guild_permissions.moderate_members or
             interaction.user.guild_permissions.ban_members or
             interaction.user.guild_permissions.kick_members)
 
+# =====================================================
+# Generic file helpers for other data
+# =====================================================
+
+def save_reaction_roles():
+    write_json('reaction_roles.json', reaction_roles)
+
+def load_reaction_roles():
+    global reaction_roles
+    reaction_roles = read_json('reaction_roles.json', {})
+
+def save_ticket_data():
+    write_json('ticket_data.json', ticket_data)
+
+def load_ticket_data():
+    global ticket_data
+    ticket_data = read_json('ticket_data.json', {})
+
 def load_pinned_messages():
     return read_json('pinned_messages.json', {})
 
-# ------------- Ticket Categories (Customizable) -------------
+# =====================================================
+# Snippet Storage with Migration
+# New unified format per guild:
+# snippets[guild_id] = {
+#   "trigger": {"content": "text with {1}", "dynamic": True/False},
+#   ...
+# }
+# =====================================================
+
+def load_snippets():
+    """Load snippets and migrate any old formats to the unified object format."""
+    global snippets
+    raw = read_json('snippets.json', {})
+    migrated = False
+
+    for guild_id, triggers in raw.items():
+        for trigger, value in list(triggers.items()):
+            if isinstance(value, str):
+                # Old format: just a string → convert to object static
+                raw[guild_id][trigger] = {"content": value, "dynamic": False}
+                migrated = True
+            elif isinstance(value, dict):
+                # Ensure required keys exist
+                if "content" not in value:
+                    raw[guild_id][trigger]["content"] = ""
+                    migrated = True
+                if "dynamic" not in value:
+                    raw[guild_id][trigger]["dynamic"] = False
+                    migrated = True
+
+    if migrated:
+        write_json('snippets.json', raw)
+
+    snippets = raw
+
+def save_snippets():
+    write_json('snippets.json', snippets)
+
+# =====================================================
+# Ticket Categories (Customizable)
+# =====================================================
 
 def default_ticket_categories():
     return {
@@ -125,69 +179,49 @@ def default_ticket_categories():
         }
     }
 
-def load_ticket_categories():
-    return read_json("ticket_categories.json", default_ticket_categories)
+ticket_categories = read_json("ticket_categories.json", default_ticket_categories)
 
 def save_ticket_categories(categories):
     write_json("ticket_categories.json", categories)
 
-ticket_categories = load_ticket_categories()
-
-# ------------- Ready Event -------------
+# =====================================================
+# Ready Event (register persistent views, sync commands)
+# =====================================================
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is in {len(bot.guilds)} guilds')
+
     load_reaction_roles()
-    load_snippets()
     load_ticket_data()
-    # Persistent UI so dropdown/buttons survive restarts:
+    load_snippets()
+
+    # Persistent UI so dropdown/buttons survive restarts
     try:
-        bot.add_view(TicketMenuView())  # persistent view (timeout=None)
+        bot.add_view(TicketMenuView())     # persistent view (timeout=None)
         bot.add_view(TicketControlView())  # persistent ticket controls
     except Exception as e:
         print(f"Failed to add persistent views: {e}")
+
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# Re-pin messages when bot starts (optional feature)
-async def repin_messages():
-    pinned_data = load_pinned_messages()
-    changed = False
-    for pin_id, data in list(pinned_data.items()):
-        try:
-            guild = bot.get_guild(int(data['guild_id']))
-            if not guild:
-                continue
-            channel = guild.get_channel(int(data['channel_id']))
-            if not channel:
-                continue
-            try:
-                await channel.fetch_message(int(pin_id))
-            except discord.NotFound:
-                # Message was deleted, remove from tracking
-                del pinned_data[pin_id]
-                changed = True
-        except Exception:
-            continue
-    if changed:
-        write_json('pinned_messages.json', pinned_data)
-
-# ------------- Ticket System -------------
+# =====================================================
+# Ticket System (dynamic categories + ephemeral confirmations)
+# =====================================================
 
 class TicketCategorySelect(discord.ui.Select):
-    # custom_id so it persists across restarts
     def __init__(self):
         options = []
         for key, data in ticket_categories.items():
             try:
                 options.append(discord.SelectOption(
-                    label=data["label"],
-                    description=data["desc"][:100] if data.get("desc") else None,
+                    label=data.get("label", key),
+                    description=(data.get("desc") or "")[:100],
                     emoji=data.get("emoji"),
                     value=key
                 ))
@@ -199,11 +233,15 @@ class TicketCategorySelect(discord.ui.Select):
                     value=key
                 ))
 
-        placeholder = "Choose a ticket category..."
-        super().__init__(placeholder=placeholder, options=options, min_values=1, max_values=1, custom_id="ticket_category_select_v1")
+        super().__init__(
+            placeholder="Choose a ticket category...",
+            options=options,
+            min_values=1,
+            max_values=1,
+            custom_id="ticket_category_select_v1"  # persistent
+        )
 
     async def callback(self, interaction: discord.Interaction):
-        # Ephemeral only — prevents "used /ticket" message in chat
         selected_category = self.values[0]
         cat = ticket_categories.get(selected_category)
         category_display = cat["label"] if cat else selected_category
@@ -211,7 +249,7 @@ class TicketCategorySelect(discord.ui.Select):
         guild_id = str(interaction.guild.id)
         user_id = str(interaction.user.id)
 
-        # Prevent duplicate open tickets per user
+        # Prevent duplicate open tickets
         if guild_id in ticket_data:
             for thread_id, data in ticket_data[guild_id].items():
                 if data['user_id'] == user_id and data['status'] == 'open':
@@ -222,7 +260,6 @@ class TicketCategorySelect(discord.ui.Select):
                             ephemeral=True
                         )
 
-        # Create private thread (no public "used" message)
         try:
             thread_name = f"{category_display} - {interaction.user.display_name}"
             thread = await interaction.channel.create_thread(
@@ -234,27 +271,29 @@ class TicketCategorySelect(discord.ui.Select):
 
             if guild_id not in ticket_data:
                 ticket_data[guild_id] = {}
-            ticket_entry = {
+            ticket_data[guild_id][str(thread.id)] = {
                 'user_id': user_id,
                 'category': selected_category,
                 'status': 'open',
                 'created_at': datetime.utcnow().isoformat(),
                 'channel_id': str(interaction.channel.id)
             }
-            ticket_data[guild_id][str(thread.id)] = ticket_entry
             save_ticket_data()
 
             embed = discord.Embed(
                 title=f"🎫 New Ticket - {category_display}",
-                description=f"Hello {interaction.user.mention}! Thank you for creating a ticket.\n\n"
-                            f"**Category:** {category_display}\n"
-                            f"**Status:** Open\n\n"
-                            f"Please describe your issue or question in detail. A staff member will assist you shortly!",
+                description=(
+                    f"Hello {interaction.user.mention}! Thank you for creating a ticket.\n\n"
+                    f"**Category:** {category_display}\n"
+                    f"**Status:** Open\n\n"
+                    f"Please describe your issue or question in detail. A staff member will assist you shortly!"
+                ),
                 color=discord.Color.green()
             )
             view = TicketControlView()
             await thread.send(embed=embed, view=view)
 
+            # Ephemeral confirmation only — prevents public "used /ticket" message
             await interaction.response.send_message(
                 f"✅ Your ticket has been created: {thread.mention}",
                 ephemeral=True
@@ -274,7 +313,6 @@ class TicketCategorySelect(discord.ui.Select):
 class TicketMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        # Add persistent select
         self.add_item(TicketCategorySelect())
 
 class TicketControlView(discord.ui.View):
@@ -289,16 +327,15 @@ class TicketControlView(discord.ui.View):
         if guild_id not in ticket_data or thread_id not in ticket_data[guild_id]:
             return await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
 
-        ticket_info = ticket_data[guild_id][thread_id]
-        is_ticket_owner = str(interaction.user.id) == ticket_info['user_id']
+        info = ticket_data[guild_id][thread_id]
+        is_ticket_owner = str(interaction.user.id) == info['user_id']
         is_staff = has_mod_permissions_or_override(interaction)
-
         if not (is_ticket_owner or is_staff):
             return await interaction.response.send_message("❌ You don't have permission to close this ticket!", ephemeral=True)
 
-        ticket_info['status'] = 'closed'
-        ticket_info['closed_at'] = datetime.utcnow().isoformat()
-        ticket_info['closed_by'] = str(interaction.user.id)
+        info['status'] = 'closed'
+        info['closed_at'] = datetime.utcnow().isoformat()
+        info['closed_by'] = str(interaction.user.id)
         save_ticket_data()
 
         embed = discord.Embed(
@@ -319,8 +356,7 @@ class TicketControlView(discord.ui.View):
     async def add_note(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not has_mod_permissions_or_override(interaction):
             return await interaction.response.send_message("❌ Only staff can add notes to tickets!", ephemeral=True)
-        modal = TicketNoteModal()
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(TicketNoteModal())
 
 class TicketNoteModal(discord.ui.Modal, title="Add Ticket Note"):
     note = discord.ui.TextInput(
@@ -339,13 +375,12 @@ class TicketNoteModal(discord.ui.Modal, title="Add Ticket Note"):
         embed.set_footer(text=f"Added by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
-# Slash command to spawn the ticket menu (without "used /ticket" showing)
 @bot.tree.command(name="ticket", description="Create a ticket menu")
 async def create_ticket_menu(interaction: discord.Interaction):
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
-    # Defer ephemerally so no public "used /ticket" message appears
+    # Defer ephemerally so no public 'used /ticket' message appears
     await interaction.response.defer(ephemeral=True)
 
     embed = discord.Embed(
@@ -357,9 +392,7 @@ async def create_ticket_menu(interaction: discord.Interaction):
     embed.set_footer(text="Select a category from the dropdown menu below")
 
     view = TicketMenuView()
-    # Post a normal bot message to the channel (no 'used /ticket' banner)
     await interaction.channel.send(embed=embed, view=view)
-
     await interaction.followup.send("✅ Ticket menu posted.", ephemeral=True)
 
 @bot.tree.command(name="ticketstats", description="View ticket statistics")
@@ -411,8 +444,6 @@ async def list_tickets(interaction: discord.Interaction):
                 user = bot.get_user(int(data['user_id']))
                 category_label = ticket_categories.get(data['category'], {}).get("label", data['category'])
                 user_name = user.display_name if user else "Unknown User"
-
-                # created_at saved as ISO; parse and make unix ts
                 try:
                     dt = datetime.fromisoformat(data['created_at'])
                 except Exception:
@@ -433,8 +464,7 @@ async def list_tickets(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ------------- Category Management Commands -------------
-
+# Category management
 @bot.tree.command(name="addticketcategory", description="Add a new ticket category")
 @app_commands.describe(
     key="Unique ID for category (no spaces)",
@@ -472,107 +502,119 @@ async def list_ticket_categories(interaction: discord.Interaction):
         embed.add_field(name=name, value=v.get("desc", ""), inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ------------- Snippets -------------
+# =====================================================
+# Snippet Commands (with migration + dynamic placeholders)
+# =====================================================
 
-@bot.tree.command(name="addsnippet", description="Add a new snippet")
-@app_commands.describe(
-    trigger="The trigger word (without !)",
-    content="The content to send when triggered"
-)
+@bot.tree.command(name="addsnippet", description="Add a static snippet")
+@app_commands.describe(trigger="Trigger word (no !)", content="Content to send")
 async def add_snippet(interaction: discord.Interaction, trigger: str, content: str):
     if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-    trigger = trigger.lstrip('!')
-    guild_id = str(interaction.guild.id)
-    snippets.setdefault(guild_id, {})[trigger] = content
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": False}
     save_snippets()
-    await interaction.response.send_message(f"✅ Snippet `!{trigger}` created successfully!", ephemeral=True)
+    await interaction.response.send_message(f"✅ Static snippet `!{trigger}` added.", ephemeral=True)
 
-@bot.tree.command(name="removesnippet", description="Remove a snippet")
-@app_commands.describe(trigger="The trigger word to remove (without !)")
-async def remove_snippet(interaction: discord.Interaction, trigger: str):
+@bot.tree.command(name="adddynamicsnippet", description="Add a dynamic snippet with placeholders {1}, {2}...")
+@app_commands.describe(trigger="Trigger word (no !)", content="Content with placeholders like {1}, {2}, ...")
+async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, content: str):
     if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-    trigger = trigger.lstrip('!')
-    guild_id = str(interaction.guild.id)
-    if guild_id in snippets and trigger in snippets[guild_id]:
-        del snippets[guild_id][trigger]
-        save_snippets()
-        await interaction.response.send_message(f"✅ Snippet `!{trigger}` removed successfully!", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"❌ Snippet `!{trigger}` not found!", ephemeral=True)
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": True}
+    save_snippets()
+    await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` added.", ephemeral=True)
 
-@bot.tree.command(name="listsnippets", description="List all snippets")
-async def list_snippets(interaction: discord.Interaction):
-    guild_id = str(interaction.guild.id)
-    if guild_id not in snippets or not snippets[guild_id]:
-        return await interaction.response.send_message("No snippets found for this server!", ephemeral=True)
-
-    embed = discord.Embed(
-        title="📝 Available Snippets",
-        description="Here are all the snippets for this server:",
-        color=discord.Color.green()
-    )
-    snippet_list = []
-    for trigger, content in snippets[guild_id].items():
-        display_content = content[:50] + "..." if len(content) > 50 else content
-        snippet_list.append(f"`!{trigger}` - {display_content}")
-
-    chunk_size = 10
-    for i in range(0, len(snippet_list), chunk_size):
-        chunk = snippet_list[i:i+chunk_size]
-        embed.add_field(name=f"Snippets {i//chunk_size + 1}", value="\n".join(chunk), inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="editsnippet", description="Edit an existing snippet")
-@app_commands.describe(
-    trigger="The trigger word to edit (without !)",
-    content="The new content for the snippet"
-)
+@bot.tree.command(name="editsnippet", description="Edit a static snippet")
+@app_commands.describe(trigger="Trigger word (no !)", content="New content")
 async def edit_snippet(interaction: discord.Interaction, trigger: str, content: str):
     if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-    trigger = trigger.lstrip('!')
-    guild_id = str(interaction.guild.id)
-    if guild_id in snippets and trigger in snippets[guild_id]:
-        snippets[guild_id][trigger] = content
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    if gid in snippets and trigger in snippets[gid]:
+        snippets[gid][trigger]["content"] = content
+        snippets[gid][trigger]["dynamic"] = False
         save_snippets()
-        await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated successfully!", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"❌ Snippet `!{trigger}` not found!", ephemeral=True)
+        return await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated.", ephemeral=True)
+    await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
 
-# ------------- Message Handler (Snippets + Pin Reposting) -------------
+@bot.tree.command(name="editdynamicsnippet", description="Edit a dynamic snippet (or toggle dynamic mode)")
+@app_commands.describe(trigger="Trigger word (no !)", content="New content", dynamic="True/False for dynamic mode")
+async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, content: str, dynamic: Optional[bool] = True):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    if gid in snippets and trigger in snippets[gid]:
+        snippets[gid][trigger]["content"] = content
+        snippets[gid][trigger]["dynamic"] = bool(dynamic)
+        save_snippets()
+        return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` updated.", ephemeral=True)
+    await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
+
+@bot.tree.command(name="listsnippets", description="List snippets for this server")
+async def list_snippets(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    if gid not in snippets or not snippets[gid]:
+        return await interaction.response.send_message("No snippets found.", ephemeral=True)
+    embed = discord.Embed(title="📝 Snippets", color=discord.Color.green())
+    for trig, data in snippets[gid].items():
+        label = "(Dynamic)" if data.get("dynamic") else "(Static)"
+        preview = data["content"][:50] + "..." if len(data["content"]) > 50 else data["content"]
+        embed.add_field(name=f"!{trig} {label}", value=preview or "-", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# =====================================================
+# on_message handler (pins → then snippets with placeholders)
+# =====================================================
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
+    # Pinned message reposting
     await handle_pin_repost(message)
 
-    # Snippets: messages starting with "!"
-    if not message.content.startswith('!'):
+    # Snippet handling (messages starting with "!")
+    if not message.content.startswith("!"):
         return
 
+    gid = str(message.guild.id)
     parts = message.content.split()
     if not parts:
         return
 
     trigger = parts[0][1:]
-    guild_id = str(message.guild.id)
 
-    if guild_id in snippets and trigger in snippets[guild_id]:
-        content = snippets[guild_id][trigger]
+    if gid in snippets and trigger in snippets[gid]:
+        entry = snippets[gid][trigger]
+        content = entry["content"]
+        is_dynamic = entry.get("dynamic", False)
+
+        # Delete the original trigger message to keep channels clean
         try:
             await message.delete()
         except discord.Forbidden:
             pass
 
+        if is_dynamic:
+            # Replace placeholders {1}, {2}, ... globally.
+            args = parts[1:]
+            for i, arg in enumerate(args, start=1):
+                content = content.replace(f"{{{i}}}", arg)
+            # Remove any unused {n} placeholders
+            content = re.sub(r"\{\d+\}", "", content)
+
+        # If the snippet was used as a reply, mention the original author first.
         if message.reference and message.reference.message_id:
             try:
-                replied_message = await message.channel.fetch_message(message.reference.message_id)
-                content = f"{replied_message.author.mention} {content}"
+                replied = await message.channel.fetch_message(message.reference.message_id)
+                content = f"{replied.author.mention} {content}"
             except discord.NotFound:
                 pass
 
@@ -581,7 +623,15 @@ async def on_message(message):
         except discord.Forbidden:
             await message.channel.send(f"⚠️ I don't have permission to send messages! Snippet would be: {content}")
 
+    # Keep slash commands working
+    await bot.process_commands(message)
+
+# =====================================================
+# Pin Helpers & Commands
+# =====================================================
+
 async def handle_pin_repost(message):
+    """Repost the tracked 'pinned' message so it stays at the bottom."""
     try:
         channel_id = str(message.channel.id)
         pinned_messages = load_pinned_messages()
@@ -612,8 +662,6 @@ async def handle_pin_repost(message):
         pass
     except Exception as e:
         print(f"Error handling pin repost: {e}")
-
-# ------------- Pin Commands -------------
 
 @bot.tree.command(name="setpin", description="Set a pinned message that stays at the bottom of the channel")
 @app_commands.describe(content="The text content for the pinned message")
@@ -663,31 +711,28 @@ async def remove_pin(interaction: discord.Interaction, message_id: Optional[str]
     pinned_messages = load_pinned_messages()
     channel_id = str(interaction.channel.id)
 
-    def try_delete(mid: int):
-        async def inner():
-            try:
-                msg = await interaction.channel.fetch_message(mid)
-                await msg.delete()
-            except discord.NotFound:
-                pass
-        return inner
+    async def try_delete(mid: int):
+        try:
+            msg = await interaction.channel.fetch_message(mid)
+            await msg.delete()
+        except discord.NotFound:
+            pass
 
     try:
         if message_id:
             mid = int(message_id)
             if str(mid) in pinned_messages and pinned_messages[str(mid)]['channel_id'] == channel_id:
-                await try_delete(mid)()
+                await try_delete(mid)
                 del pinned_messages[str(mid)]
                 write_json('pinned_messages.json', pinned_messages)
                 return await interaction.response.send_message("✅ Pinned message removed!", ephemeral=True)
             else:
                 return await interaction.response.send_message("❌ This is not a tracked pinned message for this channel!", ephemeral=True)
         else:
-            # Remove whichever pin is tracked for this channel
             removed_any = False
             for pin_id, data in list(pinned_messages.items()):
                 if data['channel_id'] == channel_id:
-                    await try_delete(int(pin_id))()
+                    await try_delete(int(pin_id))
                     del pinned_messages[pin_id]
                     removed_any = True
             write_json('pinned_messages.json', pinned_messages)
@@ -722,7 +767,9 @@ async def list_pins(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ------------- Reaction Roles -------------
+# =====================================================
+# Reaction Roles
+# =====================================================
 
 @bot.tree.command(name="reactionrole", description="Add a reaction role to a message")
 @app_commands.describe(
@@ -823,7 +870,9 @@ async def on_reaction_remove(reaction, user):
                 except discord.HTTPException as e:
                     print(f"❌ Failed to remove role: {e}")
 
-# ------------- Moderation -------------
+# =====================================================
+# Moderation
+# =====================================================
 
 @bot.tree.command(name="timeout", description="Timeout a member for specified minutes")
 @app_commands.describe(
@@ -958,7 +1007,9 @@ async def clear_messages(interaction: discord.Interaction, amount: int):
     except discord.HTTPException as e:
         await interaction.followup.send(f"❌ Failed to delete messages: {e}", ephemeral=True)
 
-# ------------- Help -------------
+# =====================================================
+# Help Command
+# =====================================================
 
 @bot.tree.command(name="help", description="Display all available commands")
 async def help_mod(interaction: discord.Interaction):
@@ -969,44 +1020,59 @@ async def help_mod(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🎫 Ticket System",
-        value="`/ticket` - Create ticket menu\n`/listtickets` - List open tickets\n`/ticketstats` - View ticket statistics\n"
-              "`/addticketcategory` - Add a ticket category\n`/removeticketcategory` - Remove a ticket category\n`/listticketcategories` - List ticket categories",
+        value="`/ticket` • Post ticket menu\n"
+              "`/listtickets` • List open tickets\n"
+              "`/ticketstats` • Ticket stats\n"
+              "`/addticketcategory` • Add category\n"
+              "`/removeticketcategory` • Remove category\n"
+              "`/listticketcategories` • List categories",
         inline=False
     )
     embed.add_field(
         name="📝 Snippet Commands",
-        value="`/addsnippet <trigger> <content>`\n`/removesnippet <trigger>`\n`/editsnippet <trigger> <content>`\n`/listsnippets`",
+        value="`/addsnippet <trigger> <content>` • Add static\n"
+              "`/adddynamicsnippet <trigger> <content>` • Add dynamic with {1},{2},...\n"
+              "`/editsnippet <trigger> <content>` • Edit static\n"
+              "`/editdynamicsnippet <trigger> <content> [dynamic]` • Edit/toggle dynamic\n"
+              "`/listsnippets` • List all snippets",
         inline=False
     )
     embed.add_field(
         name="📌 Pin Commands",
-        value="`/setpin <content>`\n`/removepin [message_id]`\n`/listpins`",
+        value="`/setpin <content>` • Set pin-at-bottom\n"
+              "`/removepin [message_id]` • Remove pin\n"
+              "`/listpins` • List pins in channel",
         inline=False
     )
     embed.add_field(
         name="⚡ Reaction Roles",
-        value="`/reactionrole <message_id> <emoji> <role>`\n`/removereactionrole <message_id> <emoji>`",
+        value="`/reactionrole <message_id> <emoji> <role>` • Add\n"
+              "`/removereactionrole <message_id> <emoji>` • Remove",
         inline=False
     )
     embed.add_field(
         name="🔨 Moderation",
-        value="`/timeout <member> <minutes> [reason]`\n`/untimeout <member> [reason]`\n`/kick <member> [reason]`\n"
-              "`/ban <member> [reason]`\n`/unban <user_id> [reason]`\n`/slowmode <seconds>`\n`/clear <amount>`",
-        inline=False
-    )
-    embed.add_field(
-        name="👥 Role Management",
-        value="`/addrole <member> <role> [reason]`\n`/removerole <member> <role> [reason]`",
+        value="`/timeout <member> <minutes> [reason]`\n"
+              "`/untimeout <member> [reason]`\n"
+              "`/kick <member> [reason]`\n"
+              "`/ban <member> [reason]`\n"
+              "`/unban <user_id> [reason]`\n"
+              "`/slowmode <seconds>`\n"
+              "`/clear <amount>`",
         inline=False
     )
     embed.add_field(
         name="ℹ️ Snippet Usage",
-        value="Use `!trigger` to activate snippets. Reply to a message with `!trigger` to mention the original author.",
+        value="Use `!trigger` to activate snippets.\n"
+              "Reply with `!trigger` to mention the original author.\n"
+              "Dynamic snippets support placeholders `{1}`, `{2}`, ...",
         inline=False
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ------------- Run -------------
+# =====================================================
+# Run
+# =====================================================
 
 if __name__ == "__main__":
     token = load_token()
