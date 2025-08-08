@@ -14,9 +14,7 @@ def load_token():
             return f.read().strip()
     except FileNotFoundError:
         print("Error: token.txt file not found!")
-        return     embed.add_field(
-        name="🎫 Ticket System",
-        value="`/ticket` - Create ticket menu\n`/listtickets` - List open tickets\n`/ticketstats` - View ticket statistics\n
+        return None
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -33,7 +31,6 @@ ADMIN_OVERRIDE_ID = 823654955025956895
 reaction_roles = {}
 snippets = {}
 ticket_data = {}
-ticket_categories = {}
 
 def save_reaction_roles():
     """Save reaction roles to file"""
@@ -76,21 +73,6 @@ def load_ticket_data():
             ticket_data = json.load(f)
     except FileNotFoundError:
         ticket_data = {}
-
-def save_ticket_categories():
-    """Save ticket categories to file"""
-    with open('ticket_categories.json', 'w') as f:
-        json.dump(ticket_categories, f, indent=2)
-
-def load_ticket_categories():
-    """Load ticket categories from file"""
-    global ticket_categories
-    try:
-        with open('ticket_categories.json', 'r') as f:
-            ticket_categories = json.load(f)
-    except FileNotFoundError:
-        # Default categories if none exist
-        ticket_categories = {}
 
 def has_permissions_or_override(interaction: discord.Interaction) -> bool:
     """Check if user has admin permissions or is the override user"""
@@ -245,57 +227,59 @@ async def edit_snippet(interaction: discord.Interaction, trigger: str, content: 
 
 # TICKET SYSTEM
 class TicketCategorySelect(discord.ui.Select):
-    def __init__(self, guild_id):
-        self.guild_id = guild_id
-        
-        # Get custom categories for this guild, or use defaults
-        if guild_id in ticket_categories and ticket_categories[guild_id]:
-            categories = ticket_categories[guild_id]
-        else:
-            # Default categories
-            categories = {
-                "tech_support": {"name": "🛠️ Technical Support", "description": "Get help with technical issues"},
-                "general_question": {"name": "❓ General Questions", "description": "Ask general questions"},
-                "report_issue": {"name": "🚨 Report Issue", "description": "Report a problem or bug"},
-                "feature_request": {"name": "💡 Feature Request", "description": "Suggest a new feature"},
-                "staff_application": {"name": "👥 Staff Application", "description": "Apply to join the staff team"},
-                "other": {"name": "📋 Other", "description": "Something else not listed above"}
-            }
-        
-        options = []
-        for key, data in list(categories.items())[:25]:  # Discord limit of 25 options
-            # Extract emoji from name if it exists
-            name = data['name']
-            emoji = None
-            if name.startswith(('🛠️', '❓', '🚨', '💡', '👥', '📋', '🎮', '💰', '📞', '🔧', '📚', '🎯', '⚡', '🎨', '🔒', '📊', '🌟', '❤️', '🎵', '🎪')):
-                emoji = name.split()[0] if ' ' in name else name[0]
-            
-            options.append(discord.SelectOption(
-                label=name,
-                description=data['description'][:100],  # Discord limit
-                emoji=emoji,
-                value=key
-            ))
-        
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="🛠️ Technical Support",
+                description="Get help with technical issues",
+                emoji="🛠️",
+                value="tech_support"
+            ),
+            discord.SelectOption(
+                label="❓ General Questions",
+                description="Ask general questions",
+                emoji="❓",
+                value="general_question"
+            ),
+            discord.SelectOption(
+                label="🚨 Report Issue",
+                description="Report a problem or bug",
+                emoji="🚨",
+                value="report_issue"
+            ),
+            discord.SelectOption(
+                label="💡 Feature Request",
+                description="Suggest a new feature",
+                emoji="💡",
+                value="feature_request"
+            ),
+            discord.SelectOption(
+                label="👥 Staff Application",
+                description="Apply to join the staff team",
+                emoji="👥",
+                value="staff_application"
+            ),
+            discord.SelectOption(
+                label="📋 Other",
+                description="Something else not listed above",
+                emoji="📋",
+                value="other"
+            )
+        ]
         super().__init__(placeholder="Choose a ticket category...", options=options, min_values=1, max_values=1)
     
     async def callback(self, interaction: discord.Interaction):
-        selected_category = self.values[0]
+        category_names = {
+            "tech_support": "🛠️ Technical Support",
+            "general_question": "❓ General Questions", 
+            "report_issue": "🚨 Report Issue",
+            "feature_request": "💡 Feature Request",
+            "staff_application": "👥 Staff Application",
+            "other": "📋 Other"
+        }
         
-        # Get category display name
-        if self.guild_id in ticket_categories and selected_category in ticket_categories[self.guild_id]:
-            category_display = ticket_categories[self.guild_id][selected_category]['name']
-        else:
-            # Fallback to default names
-            default_names = {
-                "tech_support": "🛠️ Technical Support",
-                "general_question": "❓ General Questions", 
-                "report_issue": "🚨 Report Issue",
-                "feature_request": "💡 Feature Request",
-                "staff_application": "👥 Staff Application",
-                "other": "📋 Other"
-            }
-            category_display = default_names.get(selected_category, selected_category)
+        selected_category = self.values[0]
+        category_display = category_names.get(selected_category, "Unknown")
         
         # Check if user already has an open ticket
         guild_id = str(interaction.guild.id)
@@ -331,7 +315,6 @@ class TicketCategorySelect(discord.ui.Select):
             ticket_data[guild_id][str(thread.id)] = {
                 'user_id': user_id,
                 'category': selected_category,
-                'category_display': category_display,
                 'status': 'open',
                 'created_at': discord.utils.utcnow().isoformat(),
                 'channel_id': str(interaction.channel.id)
@@ -368,9 +351,9 @@ class TicketCategorySelect(discord.ui.Select):
             )
 
 class TicketMenuView(discord.ui.View):
-    def __init__(self, guild_id):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(TicketCategorySelect(guild_id))
+        self.add_item(TicketCategorySelect())
 
 class TicketControlView(discord.ui.View):
     def __init__(self):
@@ -454,119 +437,23 @@ async def create_ticket_menu(interaction: discord.Interaction):
         await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
         return
     
-    guild_id = str(interaction.guild.id)
-    
-    # Get categories for display
-    if guild_id in ticket_categories and ticket_categories[guild_id]:
-        categories = ticket_categories[guild_id]
-        category_list = ""
-        for key, data in categories.items():
-            category_list += f"{data['name']} - {data['description']}\n"
-    else:
-        category_list = ("🛠️ **Technical Support** - Get help with technical issues\n"
-                        "❓ **General Questions** - Ask general questions\n"
-                        "🚨 **Report Issue** - Report a problem or bug\n"
-                        "💡 **Feature Request** - Suggest a new feature\n"
-                        "👥 **Staff Application** - Apply to join the staff team\n"
-                        "📋 **Other** - Something else not listed above")
-    
     embed = discord.Embed(
         title="🎫 Support Tickets",
         description="Need help? Create a support ticket by selecting a category below!\n\n"
-                   f"**Available Categories:**\n{category_list}\n\n"
+                   "**Available Categories:**\n"
+                   "🛠️ **Technical Support** - Get help with technical issues\n"
+                   "❓ **General Questions** - Ask general questions\n"
+                   "🚨 **Report Issue** - Report a problem or bug\n"
+                   "💡 **Feature Request** - Suggest a new feature\n"
+                   "👥 **Staff Application** - Apply to join the staff team\n"
+                   "📋 **Other** - Something else not listed above\n\n"
                    "*Your ticket will be created as a private thread that only you and staff can see.*",
         color=discord.Color.blue()
     )
     embed.set_footer(text="Select a category from the dropdown menu below")
     
-    view = TicketMenuView(guild_id)
+    view = TicketMenuView()
     await interaction.response.send_message(embed=embed, view=view)
-
-@bot.tree.command(name="addticketcategory", description="Add a custom ticket category")
-@app_commands.describe(
-    key="Unique identifier for the category (e.g., 'bug_report')",
-    name="Display name for the category (e.g., '🐛 Bug Report')",
-    description="Description of the category"
-)
-async def add_ticket_category(interaction: discord.Interaction, key: str, name: str, description: str):
-    if not has_permissions_or_override(interaction):
-        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-        return
-    
-    guild_id = str(interaction.guild.id)
-    
-    # Initialize guild categories if not exists
-    if guild_id not in ticket_categories:
-        ticket_categories[guild_id] = {}
-    
-    # Add the category
-    ticket_categories[guild_id][key] = {
-        "name": name,
-        "description": description
-    }
-    save_ticket_categories()
-    
-    await interaction.response.send_message(f"✅ Added ticket category: **{name}**", ephemeral=True)
-
-@bot.tree.command(name="removeticketcategory", description="Remove a custom ticket category")
-@app_commands.describe(key="The key of the category to remove")
-async def remove_ticket_category(interaction: discord.Interaction, key: str):
-    if not has_permissions_or_override(interaction):
-        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-        return
-    
-    guild_id = str(interaction.guild.id)
-    
-    if guild_id in ticket_categories and key in ticket_categories[guild_id]:
-        category_name = ticket_categories[guild_id][key]['name']
-        del ticket_categories[guild_id][key]
-        save_ticket_categories()
-        await interaction.response.send_message(f"✅ Removed ticket category: **{category_name}**", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"❌ Category '{key}' not found!", ephemeral=True)
-
-@bot.tree.command(name="listticketcategories", description="List all ticket categories")
-async def list_ticket_categories(interaction: discord.Interaction):
-    guild_id = str(interaction.guild.id)
-    
-    if guild_id not in ticket_categories or not ticket_categories[guild_id]:
-        await interaction.response.send_message("❌ No custom categories found! Using default categories.", ephemeral=True)
-        return
-    
-    categories = ticket_categories[guild_id]
-    category_list = ""
-    
-    for key, data in categories.items():
-        category_list += f"**Key:** `{key}`\n**Name:** {data['name']}\n**Description:** {data['description']}\n\n"
-    
-    embed = discord.Embed(
-        title="🎫 Ticket Categories",
-        description=category_list,
-        color=discord.Color.blue()
-    )
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="resetticketcategories", description="Reset to default ticket categories")
-async def reset_ticket_categories(interaction: discord.Interaction):
-    if not has_permissions_or_override(interaction):
-        await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-        return
-    
-    guild_id = str(interaction.guild.id)
-    
-    # Set default categories
-    ticket_categories[guild_id] = {
-        "tech_support": {"name": "🛠️ Technical Support", "description": "Get help with technical issues"},
-        "general_question": {"name": "❓ General Questions", "description": "Ask general questions"},
-        "report_issue": {"name": "🚨 Report Issue", "description": "Report a problem or bug"},
-        "feature_request": {"name": "💡 Feature Request", "description": "Suggest a new feature"},
-        "staff_application": {"name": "👥 Staff Application", "description": "Apply to join the staff team"},
-        "other": {"name": "📋 Other", "description": "Something else not listed above"}
-    }
-    save_ticket_categories()
-    
-    await interaction.response.send_message("✅ Reset to default ticket categories!", ephemeral=True)
 
 @bot.tree.command(name="ticketstats", description="View ticket statistics")
 async def ticket_stats(interaction: discord.Interaction):
@@ -588,12 +475,21 @@ async def ticket_stats(interaction: discord.Interaction):
     # Count by category
     categories = {}
     for ticket in tickets.values():
-        # Use stored display name if available, otherwise use key
-        category_display = ticket.get('category_display', ticket['category'])
-        categories[category_display] = categories.get(category_display, 0) + 1
+        category = ticket['category']
+        categories[category] = categories.get(category, 0) + 1
     
     category_text = ""
-    for cat_name, count in categories.items():
+    category_names = {
+        "tech_support": "🛠️ Technical Support",
+        "general_question": "❓ General Questions",
+        "report_issue": "🚨 Report Issue", 
+        "feature_request": "💡 Feature Request",
+        "staff_application": "👥 Staff Application",
+        "other": "📋 Other"
+    }
+    
+    for cat, count in categories.items():
+        cat_name = category_names.get(cat, cat)
         category_text += f"{cat_name}: {count}\n"
     
     embed = discord.Embed(
@@ -620,18 +516,25 @@ async def list_tickets(interaction: discord.Interaction):
         return
     
     open_tickets = []
+    category_names = {
+        "tech_support": "🛠️ Technical Support",
+        "general_question": "❓ General Questions",
+        "report_issue": "🚨 Report Issue",
+        "feature_request": "💡 Feature Request", 
+        "staff_application": "👥 Staff Application",
+        "other": "📋 Other"
+    }
     
     for thread_id, data in ticket_data[guild_id].items():
         if data['status'] == 'open':
             thread = interaction.guild.get_thread(int(thread_id))
             if thread:
                 user = bot.get_user(int(data['user_id']))
-                # Use stored display name if available, otherwise use key
-                category_display = data.get('category_display', data['category'])
+                category = category_names.get(data['category'], data['category'])
                 user_name = user.display_name if user else "Unknown User"
                 
                 created_timestamp = int(discord.utils.parse_time(data['created_at']).timestamp())
-                open_tickets.append(f"{thread.mention} - {category_display}\n👤 {user_name} • <t:{created_timestamp}:R>")
+                open_tickets.append(f"{thread.mention} - {category}\n👤 {user_name} • <t:{created_timestamp}:R>")
     
     if not open_tickets:
         await interaction.response.send_message("✅ No open tickets found!", ephemeral=True)
