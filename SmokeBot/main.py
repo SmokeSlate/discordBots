@@ -651,7 +651,7 @@ async def handle_pin_repost(message):
             except discord.NotFound:
                 pass
 
-            pin_content = f"📌 **PINNED MESSAGE**\n\n{current_pin['content']}"
+            pin_content = f"{current_pin['content']}"
             new_pinned_msg = await message.channel.send(pin_content)
 
             del pinned_messages[current_pin_id]
