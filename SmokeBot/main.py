@@ -684,7 +684,7 @@ async def set_pin(interaction: discord.Interaction, content: str):
                     pass
                 del pinned_messages[pin_id]
 
-        pin_content = f"📌 **PINNED MESSAGE**\n\n{content}"
+        pin_content = f"{content}"
         pinned_msg = await interaction.channel.send(pin_content)
 
         pinned_messages[str(pinned_msg.id)] = {
