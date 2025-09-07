@@ -1011,7 +1011,7 @@ async def clear_messages(
     contains: Optional[str] = None,
     starts_after: Optional[str] = None,
     ends_before: Optional[str] = None,
-    include_bots: Optional[bool] = False,
+    include_bots: Optional[bool] = True,
     only_bots: Optional[bool] = False,
     attachments_only: Optional[bool] = False,
     role: Optional[discord.Role] = None,
