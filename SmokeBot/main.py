@@ -991,6 +991,38 @@ async def remove_role(interaction: discord.Interaction, member: discord.Member, 
     except discord.HTTPException as e:
         await interaction.response.send_message(f"❌ Failed to remove role: {e}", ephemeral=True)
 
+@bot.tree.command(name="addroleall", description="Add a role to all members")
+@app_commands.describe(
+    role="The role to add to all members",
+    include_bots="Whether to include bots",
+    reason="Reason for adding the role"
+)
+async def add_role_all(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    include_bots: bool = False,
+    reason: str = "No reason provided",
+):
+    if not has_mod_permissions_or_override(interaction):
+        return await interaction.response.send_message(
+            "❌ You don't have permission to use this command!", ephemeral=True
+        )
+    await interaction.response.defer(ephemeral=True)
+    added = 0
+    for member in interaction.guild.members:
+        if not include_bots and member.bot:
+            continue
+        try:
+            await member.add_roles(role, reason=reason)
+            added += 1
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            pass
+    await interaction.followup.send(
+        f"✅ Added {role.name} role to {added} member(s)!", ephemeral=True
+    )
+
 @bot.tree.command(name="clear", description="Delete messages with filters")
 @app_commands.describe(
     amount="How many messages to delete (target count)",
@@ -1153,7 +1185,10 @@ async def help_mod(interaction: discord.Interaction):
               "`/ban <member> [reason]`\n"
               "`/unban <user_id> [reason]`\n"
               "`/slowmode <seconds>`\n"
-              "`/clear <amount>`",
+              "`/clear <amount>`\n"
+              "`/addrole <member> <role>`\n"
+              "`/removerole <member> <role>`\n"
+              "`/addroleall <role>`",
         inline=False
     )
     embed.add_field(
