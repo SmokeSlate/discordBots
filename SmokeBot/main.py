@@ -1166,6 +1166,10 @@ async def clear_messages(
 
 @bot.tree.command(name="help", description="Display all available commands")
 async def help_mod(interaction: discord.Interaction):
+    def cmd(name: str) -> str:
+        command = bot.tree.get_command(name)
+        return command.mention if command else f"/{name}"
+
     embed = discord.Embed(
         title="🛡️ Bot Commands",
         description="Here are all available slash commands:",
@@ -1173,50 +1177,50 @@ async def help_mod(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🎫 Ticket System",
-        value="`/ticket` • Post ticket menu\n"
-              "`/listtickets` • List open tickets\n"
-              "`/ticketstats` • Ticket stats\n"
-              "`/addticketcategory` • Add category\n"
-              "`/removeticketcategory` • Remove category\n"
-              "`/listticketcategories` • List categories",
+        value=(f"{cmd('ticket')} • Post ticket menu\n"
+               f"{cmd('listtickets')} • List open tickets\n"
+               f"{cmd('ticketstats')} • Ticket stats\n"
+               f"{cmd('addticketcategory')} • Add category\n"
+               f"{cmd('removeticketcategory')} • Remove category\n"
+               f"{cmd('listticketcategories')} • List categories"),
         inline=False
     )
     embed.add_field(
         name="📝 Snippet Commands",
-        value="`/addsnippet <trigger> <content>` • Add static\n"
-              "`/adddynamicsnippet <trigger> <content>` • Add dynamic with {1},{2},...\n"
-              "`/editsnippet <trigger> <content>` • Edit static\n"
-              "`/editdynamicsnippet <trigger> <content> [dynamic]` • Edit/toggle dynamic\n"
-              "`/removesnippet <trigger>` • Remove static\n"
-              "`/removedynamicsnippet <trigger>` • Remove dynamic\n"
-              "`/listsnippets` • List all snippets",
+        value=(f"{cmd('addsnippet')} <trigger> <content> • Add static\n"
+               f"{cmd('adddynamicsnippet')} <trigger> <content> • Add dynamic with {{1}},{{2}},...\n"
+               f"{cmd('editsnippet')} <trigger> <content> • Edit static\n"
+               f"{cmd('editdynamicsnippet')} <trigger> <content> [dynamic] • Edit/toggle dynamic\n"
+               f"{cmd('removesnippet')} <trigger> • Remove static\n"
+               f"{cmd('removedynamicsnippet')} <trigger> • Remove dynamic\n"
+               f"{cmd('listsnippets')} • List all snippets"),
         inline=False
     )
     embed.add_field(
         name="📌 Pin Commands",
-        value="`/setpin <content>` • Set pin-at-bottom\n"
-              "`/removepin [message_id]` • Remove pin\n"
-              "`/listpins` • List pins in channel",
+        value=(f"{cmd('setpin')} <content> • Set pin-at-bottom\n"
+               f"{cmd('removepin')} [message_id] • Remove pin\n"
+               f"{cmd('listpins')} • List pins in channel"),
         inline=False
     )
     embed.add_field(
         name="⚡ Reaction Roles",
-        value="`/reactionrole <message_id> <emoji> <role>` • Add\n"
-              "`/removereactionrole <message_id> <emoji>` • Remove",
+        value=(f"{cmd('reactionrole')} <message_id> <emoji> <role> • Add\n"
+               f"{cmd('removereactionrole')} <message_id> <emoji> • Remove"),
         inline=False
     )
     embed.add_field(
         name="🔨 Moderation",
-        value="`/timeout <member> <minutes> [reason]`\n"
-              "`/untimeout <member> [reason]`\n"
-              "`/kick <member> [reason]`\n"
-              "`/ban <member> [reason]`\n"
-              "`/unban <user_id> [reason]`\n"
-              "`/slowmode <seconds>`\n"
-              "`/clear <amount>`\n"
-              "`/addrole <member> <role>`\n"
-              "`/removerole <member> <role>`\n"
-              "`/addroleall <role>`",
+        value=(f"{cmd('timeout')} <member> <minutes> [reason]\n"
+               f"{cmd('untimeout')} <member> [reason]\n"
+               f"{cmd('kick')} <member> [reason]\n"
+               f"{cmd('ban')} <member> [reason]\n"
+               f"{cmd('unban')} <user_id> [reason]\n"
+               f"{cmd('slowmode')} <seconds>\n"
+               f"{cmd('clear')} <amount>\n"
+               f"{cmd('addrole')} <member> <role>\n"
+               f"{cmd('removerole')} <member> <role>\n"
+               f"{cmd('addroleall')} <role>"),
         inline=False
     )
     embed.add_field(
