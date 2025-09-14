@@ -556,6 +556,32 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
         return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
 
+@bot.tree.command(name="removesnippet", description="Remove a static snippet")
+@app_commands.describe(trigger="Trigger word (no !)")
+async def remove_snippet(interaction: discord.Interaction, trigger: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    if gid in snippets and trigger in snippets[gid] and not snippets[gid][trigger].get("dynamic"):
+        del snippets[gid][trigger]
+        save_snippets()
+        return await interaction.response.send_message(f"✅ Snippet `!{trigger}` removed.", ephemeral=True)
+    await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
+
+@bot.tree.command(name="removedynamicsnippet", description="Remove a dynamic snippet")
+@app_commands.describe(trigger="Trigger word (no !)")
+async def remove_dynamic_snippet(interaction: discord.Interaction, trigger: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    if gid in snippets and trigger in snippets[gid] and snippets[gid][trigger].get("dynamic"):
+        del snippets[gid][trigger]
+        save_snippets()
+        return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` removed.", ephemeral=True)
+    await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
+
 @bot.tree.command(name="listsnippets", description="List snippets for this server")
 async def list_snippets(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
@@ -1161,6 +1187,8 @@ async def help_mod(interaction: discord.Interaction):
               "`/adddynamicsnippet <trigger> <content>` • Add dynamic with {1},{2},...\n"
               "`/editsnippet <trigger> <content>` • Edit static\n"
               "`/editdynamicsnippet <trigger> <content> [dynamic]` • Edit/toggle dynamic\n"
+              "`/removesnippet <trigger>` • Remove static\n"
+              "`/removedynamicsnippet <trigger>` • Remove dynamic\n"
               "`/listsnippets` • List all snippets",
         inline=False
     )
