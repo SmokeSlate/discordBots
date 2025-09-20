@@ -35,7 +35,7 @@
 <p>The information described above is used solely to:</p>
 <ul>
 <li>Provide and manage the ticketing, snippet, pin, reaction role, and moderation features requested by server administrators</li>
-<li>Maintain command configuration across restarts by storing the minimum required settings in local JSON files on the host machine (<code>ticket_data.json</code>, <code>reaction_roles.json</code>, <code>snippets.json</code>, <code>pinned_messages.json</code>, <code>ticket_categories.json</code>)</li>
+<li>Maintain command configuration across restarts by storing the minimum required settings.
 <li>Respond to slash commands and interaction events routed through Discord</li>
 </ul>
 <p>SmokeBot does not use the data for analytics, advertising, or any secondary purposes.</p>
@@ -43,7 +43,6 @@
 <p>All configuration data is stored locally on the machine that hosts SmokeBot. No data is transmitted to external third parties other than Discord’s platform APIs. Server owners are responsible for securing the machine where the bot runs, including restricting access to the JSON configuration files mentioned above.</p>
 <h2 id="4-data-retention-and-deletion">4. Data Retention and Deletion</h2>
 <p>Stored configuration data remains in place until a server administrator edits or removes it (for example, by deleting a snippet or clearing ticket history) or until the underlying JSON files are deleted from the host machine. Ticket threads themselves remain on Discord until archived or deleted by server staff.</p>
-<p>Server administrators may request removal of stored configuration data at any time by deleting the corresponding JSON files or by contacting the bot operator. Because SmokeBot is self‑hosted, the operator is typically the server owner or maintainer who deployed the bot.</p>
 <h2 id="5-legal-basis">5. Legal Basis</h2>
 <p>For servers operating under the EU/EEA, SmokeBot processes the limited personal data described above under the legitimate interest of the server administrators who deploy the bot to moderate and support their community.</p>
 <h2 id="6-security">6. Security</h2>
