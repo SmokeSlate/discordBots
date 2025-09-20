@@ -1,0 +1,61 @@
+<html><head></head><body>
+<h1 id="smokebot-privacy-policy">SmokeBot Privacy Policy</h1>
+<p><em>Last updated: 2024-05-06</em></p>
+<p>SmokeBot is a Discord moderation and support assistant developed for deployment by individual server owners. This Privacy Policy explains what limited information the bot processes when it operates in a Discord server, how that information is used, and the choices available to server administrators and members.</p>
+<h2 id="1-information-we-process">1. Information We Process</h2>
+<p>SmokeBot only accesses data that Discord makes available to bots in servers where it has been invited. The bot does not collect information outside of Discord. Depending on the features that have been enabled by server administrators, SmokeBot may process:</p>
+<h3 id="1-1-ticketing-system">1.1 Ticketing system</h3>
+<ul>
+<li>Discord user IDs for the member who created the ticket and staff who interact with it</li>
+<li>Category selection, ticket status, creation and closure timestamps</li>
+<li>The channel or thread ID that hosts the ticket conversation</li>
+<li>Any messages voluntarily posted in the ticket thread (handled directly on Discord – not stored by the bot)</li>
+</ul>
+<h3 id="1-2-reaction-roles">1.2 Reaction roles</h3>
+<ul>
+<li>Message IDs, emoji identifiers, and the role ID that should be granted or removed</li>
+<li>Guild (server) IDs necessary to apply the role</li>
+</ul>
+<h3 id="1-3-snippets">1.3 Snippets</h3>
+<ul>
+<li>Per‑guild snippet triggers and the text that should be posted when a trigger is used</li>
+<li>Whether a snippet is dynamic and any placeholder structure configured by server staff</li>
+</ul>
+<h3 id="1-4-persistent-pins">1.4 Persistent pins</h3>
+<ul>
+<li>The text content configured for the persistent pin</li>
+<li>The IDs for the message, channel, guild, and the administrator who set the pin</li>
+</ul>
+<h3 id="1-5-moderation-utilities">1.5 Moderation utilities</h3>
+<ul>
+<li>When moderation commands such as timeout, kick, ban, or message purge are run, SmokeBot processes the relevant Discord IDs and command parameters in memory to complete the request. These actions are executed against Discord’s APIs and are not stored by the bot after completion.</li>
+</ul>
+<p>SmokeBot requires access to message content in servers where administrators enable snippet functionality or pin reposting. This access is limited to reading messages in channels where the bot has permission so that it can detect snippet triggers and keep tracked pins up to date.</p>
+<h2 id="2-how-we-use-information">2. How We Use Information</h2>
+<p>The information described above is used solely to:</p>
+<ul>
+<li>Provide and manage the ticketing, snippet, pin, reaction role, and moderation features requested by server administrators</li>
+<li>Maintain command configuration across restarts by storing the minimum required settings in local JSON files on the host machine (<code>ticket_data.json</code>, <code>reaction_roles.json</code>, <code>snippets.json</code>, <code>pinned_messages.json</code>, <code>ticket_categories.json</code>)</li>
+<li>Respond to slash commands and interaction events routed through Discord</li>
+</ul>
+<p>SmokeBot does not use the data for analytics, advertising, or any secondary purposes.</p>
+<h2 id="3-where-information-is-stored">3. Where Information Is Stored</h2>
+<p>All configuration data is stored locally on the machine that hosts SmokeBot. No data is transmitted to external third parties other than Discord’s platform APIs. Server owners are responsible for securing the machine where the bot runs, including restricting access to the JSON configuration files mentioned above.</p>
+<h2 id="4-data-retention-and-deletion">4. Data Retention and Deletion</h2>
+<p>Stored configuration data remains in place until a server administrator edits or removes it (for example, by deleting a snippet or clearing ticket history) or until the underlying JSON files are deleted from the host machine. Ticket threads themselves remain on Discord until archived or deleted by server staff.</p>
+<p>Server administrators may request removal of stored configuration data at any time by deleting the corresponding JSON files or by contacting the bot operator. Because SmokeBot is self‑hosted, the operator is typically the server owner or maintainer who deployed the bot.</p>
+<h2 id="5-legal-basis">5. Legal Basis</h2>
+<p>For servers operating under the EU/EEA, SmokeBot processes the limited personal data described above under the legitimate interest of the server administrators who deploy the bot to moderate and support their community.</p>
+<h2 id="6-security">6. Security</h2>
+<p>The bot relies on the hosting operator to provide physical and network security. SmokeBot itself restricts access to stored data by only reading and writing to the local file system. Administrators should keep the hosting environment up to date, safeguard the Discord bot token, and limit operating system access to trusted individuals.</p>
+<h2 id="7-children-s-privacy">7. Children’s Privacy</h2>
+<p>SmokeBot does not knowingly collect personal information from children. Discord requires users to be at least 13 years old (or the minimum age in their jurisdiction) to use the platform. Server owners should ensure their communities comply with Discord’s Terms of Service.</p>
+<h2 id="8-third-party-services">8. Third‑Party Services</h2>
+<p>SmokeBot interacts exclusively with Discord’s APIs. Use of the bot is also subject to Discord’s own policies, including the <a href="https://discord.com/terms">Discord Terms of Service</a> and <a href="https://discord.com/privacy">Privacy Policy</a>.</p>
+<h2 id="9-changes-to-this-policy">9. Changes to This Policy</h2>
+<p>We may update this Privacy Policy to reflect improvements or legal requirements. When changes are made, the “Last updated” date at the top of this page will be revised. Material changes will be communicated to server administrators through the project repository or release notes.</p>
+<h2 id="10-contact">10. Contact</h2>
+<p>Because SmokeBot is typically self‑hosted, the primary contact for privacy requests is the individual or team that operates the bot in your server. If you obtained SmokeBot from a public repository, please use the contact information provided there to reach the maintainer.</p>
+<hr>
+<p>By continuing to use SmokeBot in your server, you acknowledge that you have read and understood this Privacy Policy.</p>
+</body></html>
