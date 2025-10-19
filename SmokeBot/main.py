@@ -13,6 +13,7 @@ from discord.ext import commands
 import asyncio
 import json
 import os
+import random
 import re
 from typing import Optional
 from datetime import datetime, timedelta
@@ -65,6 +66,7 @@ ADMIN_OVERRIDE_ID = 823654955025956895
 reaction_roles = {}
 ticket_data = {}
 snippets = {}  # unified format after migration
+giveaways = {}
 
 # =====================================================
 # Permissions Checkers
@@ -102,6 +104,237 @@ def load_ticket_data():
 
 def load_pinned_messages():
     return read_json('pinned_messages.json', {})
+
+def load_giveaways():
+    global giveaways
+    giveaways = read_json('giveaways.json', {})
+
+def save_giveaways():
+    write_json('giveaways.json', giveaways)
+
+# =====================================================
+# Giveaway Helpers and Views
+# =====================================================
+
+def build_giveaway_embed(data: dict) -> discord.Embed:
+    ended = data.get("ended", False)
+    try:
+        end_dt = datetime.fromisoformat(data.get("end_time", datetime.utcnow().isoformat()))
+    except ValueError:
+        end_dt = datetime.utcnow()
+    end_ts = int(end_dt.timestamp())
+
+    color = discord.Color.red() if ended else discord.Color.blurple()
+    embed = discord.Embed(title=f"🎉 Giveaway: {data.get('prize', 'Prize')}", color=color)
+
+    host_id = data.get("host_id")
+    host_line = f"Hosted by: <@{host_id}>" if host_id else "Hosted by: Unknown"
+    winner_count = data.get("winner_count", 1)
+    required_role_id = data.get("required_role_id")
+    try:
+        required_role_id_int = int(required_role_id) if required_role_id else None
+    except (TypeError, ValueError):
+        required_role_id_int = None
+
+    lines = [host_line, f"Winners: **{winner_count}**"]
+    if required_role_id_int:
+        lines.append(f"Required role: <@&{required_role_id_int}>")
+    if ended:
+        lines.append(f"Ended: <t:{end_ts}:R> (<t:{end_ts}:f>)")
+    else:
+        lines.append(f"Ends: <t:{end_ts}:R> (<t:{end_ts}:f>)")
+
+    embed.description = "\n".join(lines)
+
+    details = data.get("description")
+    if details:
+        embed.add_field(name="Details", value=details, inline=False)
+
+    participants = data.get("participants", [])
+    embed.add_field(name="Entries", value=str(len(participants)), inline=False)
+
+    if ended:
+        winner_ids = data.get("final_winners", [])
+        if winner_ids:
+            mentions = [f"<@{wid}>" for wid in winner_ids]
+            embed.add_field(name="Winner(s)", value="\n".join(mentions), inline=False)
+        else:
+            embed.add_field(name="Winner(s)", value="No valid entries", inline=False)
+
+    footer_text = "Giveaway concluded" if ended else "Click the button below to enter!"
+    embed.set_footer(text=footer_text)
+
+    return embed
+
+
+async def update_giveaway_message(giveaway_id: str):
+    data = giveaways.get(giveaway_id)
+    if not data:
+        return
+
+    channel_id = data.get("channel_id")
+    try:
+        channel_id_int = int(channel_id)
+    except (TypeError, ValueError):
+        return
+
+    channel = bot.get_channel(channel_id_int)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id_int)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+
+    try:
+        message = await channel.fetch_message(int(giveaway_id))
+    except (discord.NotFound, discord.HTTPException):
+        return
+
+    try:
+        await message.edit(embed=build_giveaway_embed(data))
+    except discord.HTTPException:
+        pass
+
+
+async def conclude_giveaway(giveaway_id: str):
+    data = giveaways.get(giveaway_id)
+    if not data or data.get("ended"):
+        return
+
+    channel_id = data.get("channel_id")
+    try:
+        channel_id_int = int(channel_id)
+    except (TypeError, ValueError):
+        channel_id_int = None
+
+    channel = bot.get_channel(channel_id_int) if channel_id_int else None
+    if channel is None and channel_id_int:
+        try:
+            channel = await bot.fetch_channel(channel_id_int)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            channel = None
+
+    message = None
+    if channel is not None:
+        try:
+            message = await channel.fetch_message(int(giveaway_id))
+        except (discord.NotFound, discord.HTTPException):
+            message = None
+
+    participants = data.get("participants", [])
+    winner_count = max(1, int(data.get("winner_count", 1)))
+    if len(participants) < winner_count:
+        winner_count = len(participants)
+
+    if winner_count > 0:
+        winners = random.sample(participants, k=winner_count)
+    else:
+        winners = []
+
+    data["ended"] = True
+    data["final_winners"] = winners
+    save_giveaways()
+
+    if message is not None:
+        try:
+            await message.edit(embed=build_giveaway_embed(data), view=GiveawayJoinView(giveaway_id, disabled=True))
+        except discord.HTTPException:
+            pass
+
+    if channel is not None:
+        try:
+            if winners:
+                mentions = ", ".join(f"<@{wid}>" for wid in winners)
+                announcement = (
+                    f"🎉 Giveaway ended for **{data.get('prize', 'a prize')}**!\n"
+                    f"Winners: {mentions}"
+                )
+                host_id = data.get("host_id")
+                if host_id:
+                    announcement += f"\nHosted by <@{host_id}>"
+            else:
+                announcement = f"😕 Giveaway for **{data.get('prize', 'a prize')}** ended with no valid entries."
+
+            if message is not None:
+                announcement += f"\n{message.jump_url}"
+
+            await channel.send(announcement)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
+async def schedule_giveaway_end(giveaway_id: str):
+    await bot.wait_until_ready()
+    data = giveaways.get(giveaway_id)
+    if not data or data.get("ended"):
+        return
+
+    try:
+        end_dt = datetime.fromisoformat(data.get("end_time", datetime.utcnow().isoformat()))
+    except ValueError:
+        end_dt = datetime.utcnow()
+
+    delay = (end_dt - datetime.utcnow()).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+    await conclude_giveaway(giveaway_id)
+
+
+class GiveawayJoinButton(discord.ui.Button):
+    def __init__(self, giveaway_id: str, *, disabled: bool = False):
+        super().__init__(
+            label="Enter Giveaway",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"giveaway_join:{giveaway_id}",
+            disabled=disabled
+        )
+        self.giveaway_id = giveaway_id
+
+    async def callback(self, interaction: discord.Interaction):
+        data = giveaways.get(self.giveaway_id)
+        if not data:
+            await interaction.response.send_message("❌ This giveaway could not be found.", ephemeral=True)
+            return
+
+        if data.get("ended"):
+            await interaction.response.send_message("⏰ This giveaway has already ended.", ephemeral=True)
+            return
+
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ This giveaway can only be joined from a server.", ephemeral=True)
+            return
+
+        required_role_id = data.get("required_role_id")
+        if required_role_id:
+            try:
+                required_role = interaction.guild.get_role(int(required_role_id))
+            except (TypeError, ValueError):
+                required_role = None
+            if required_role and required_role not in getattr(interaction.user, "roles", []):
+                await interaction.response.send_message(
+                    f"❌ You need the {required_role.mention} role to enter this giveaway.",
+                    ephemeral=True
+                )
+                return
+
+        user_id = str(interaction.user.id)
+        participants = data.setdefault("participants", [])
+        if user_id in participants:
+            await interaction.response.send_message("✅ You're already entered in this giveaway!", ephemeral=True)
+            return
+
+        participants.append(user_id)
+        save_giveaways()
+
+        await interaction.response.send_message("🎉 You've entered the giveaway!", ephemeral=True)
+        await update_giveaway_message(self.giveaway_id)
+
+
+class GiveawayJoinView(discord.ui.View):
+    def __init__(self, giveaway_id: str, *, disabled: bool = False):
+        super().__init__(timeout=None)
+        self.add_item(GiveawayJoinButton(giveaway_id, disabled=disabled))
 
 # =====================================================
 # Snippet Storage with Migration
@@ -196,6 +429,16 @@ async def on_ready():
     load_reaction_roles()
     load_ticket_data()
     load_snippets()
+    load_giveaways()
+
+    for message_id, data in list(giveaways.items()):
+        if data.get("ended"):
+            continue
+        try:
+            bot.add_view(GiveawayJoinView(message_id))
+        except Exception as e:
+            print(f"Failed to add giveaway view for {message_id}: {e}")
+        asyncio.create_task(schedule_giveaway_end(message_id))
 
     # Persistent UI so dropdown/buttons survive restarts
     try:
@@ -501,6 +744,87 @@ async def list_ticket_categories(interaction: discord.Interaction):
         name = f"{(v.get('emoji')+' ') if v.get('emoji') else ''}{v.get('label', k)} (`{k}`)"
         embed.add_field(name=name, value=v.get("desc", ""), inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# =====================================================
+# Giveaway Command
+# =====================================================
+
+@bot.tree.command(name="giveaway", description="Start a giveaway with optional role restrictions")
+@app_commands.describe(
+    prize="Prize being given away",
+    duration_minutes="Duration of the giveaway in minutes",
+    winner_count="Number of winners to draw",
+    role="Role required to participate (optional)",
+    channel="Channel to post the giveaway message in",
+    details="Additional details shown in the giveaway embed"
+)
+async def start_giveaway(
+    interaction: discord.Interaction,
+    prize: str,
+    duration_minutes: app_commands.Range[int, 1, 10080],
+    winner_count: app_commands.Range[int, 1, 50],
+    role: Optional[discord.Role] = None,
+    channel: Optional[discord.TextChannel] = None,
+    details: Optional[str] = None
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ You don't have permission to start giveaways.", ephemeral=True)
+
+    if channel and channel.guild.id != interaction.guild.id:
+        return await interaction.response.send_message("❌ Please choose a channel from this server.", ephemeral=True)
+
+    description_text = details.strip() if details and details.strip() else None
+
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = channel or interaction.channel
+    if target_channel is None:
+        return await interaction.followup.send("❌ Unable to determine the channel to post the giveaway.", ephemeral=True)
+
+    end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
+
+    data = {
+        "guild_id": str(interaction.guild.id),
+        "channel_id": str(target_channel.id),
+        "host_id": str(interaction.user.id),
+        "prize": prize,
+        "end_time": end_time.isoformat(),
+        "winner_count": int(winner_count),
+        "required_role_id": str(role.id) if role else None,
+        "description": description_text,
+        "participants": [],
+        "ended": False
+    }
+
+    embed = build_giveaway_embed(data)
+
+    try:
+        message = await target_channel.send(embed=embed)
+    except discord.Forbidden:
+        return await interaction.followup.send("❌ I don't have permission to send messages in that channel.", ephemeral=True)
+    except discord.HTTPException as e:
+        return await interaction.followup.send(f"❌ Failed to create giveaway: {e}", ephemeral=True)
+
+    giveaway_id = str(message.id)
+    data["message_id"] = giveaway_id
+    giveaways[giveaway_id] = data
+    save_giveaways()
+
+    view = GiveawayJoinView(giveaway_id)
+    try:
+        await message.edit(view=view)
+    except discord.HTTPException:
+        pass
+    else:
+        bot.add_view(view)
+
+    asyncio.create_task(schedule_giveaway_end(giveaway_id))
+
+    end_ts = int(end_time.timestamp())
+    await interaction.followup.send(
+        f"✅ Giveaway posted in {target_channel.mention}! Ends <t:{end_ts}:R>.",
+        ephemeral=True
+    )
 
 # =====================================================
 # Snippet Commands (with migration + dynamic placeholders)
