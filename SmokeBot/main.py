@@ -61,8 +61,6 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-ADMIN_OVERRIDE_ID = 823654955025956895
-
 reaction_roles = {}
 ticket_data = {}
 snippets = {}  # unified format after migration
@@ -73,13 +71,11 @@ giveaways = {}
 # =====================================================
 
 def has_permissions_or_override(interaction: discord.Interaction) -> bool:
-    return (interaction.user.id == ADMIN_OVERRIDE_ID or
-            interaction.user.guild_permissions.administrator or
+    return (interaction.user.guild_permissions.administrator or
             interaction.user.guild_permissions.manage_messages)
 
 def has_mod_permissions_or_override(interaction: discord.Interaction) -> bool:
-    return (interaction.user.id == ADMIN_OVERRIDE_ID or
-            interaction.user.guild_permissions.administrator or
+    return (interaction.user.guild_permissions.administrator or
             interaction.user.guild_permissions.moderate_members or
             interaction.user.guild_permissions.ban_members or
             interaction.user.guild_permissions.kick_members)
