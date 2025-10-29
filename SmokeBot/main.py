@@ -1488,7 +1488,14 @@ async def clear_messages(
 async def help_mod(interaction: discord.Interaction):
     def cmd(name: str) -> str:
         command = bot.tree.get_command(name)
-        return command.mention if command else f"/{name}"
+        if not command:
+            return f"/{name}"
+
+        mention = getattr(command, "mention", None)
+        if mention:
+            return mention
+
+        return f"/{command.qualified_name}"
 
     embed = discord.Embed(
         title="🛡️ Bot Commands",
