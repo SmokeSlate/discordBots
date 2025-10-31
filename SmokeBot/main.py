@@ -1022,49 +1022,52 @@ async def on_message(message):
     await handle_pin_repost(message)
 
     # Snippet handling (messages starting with "!")
-    if not message.content.startswith("!"):
-        return
+    if message.content.startswith("!"):
+        if not message.guild:
+            return
 
-    gid = str(message.guild.id)
-    parts = message.content.split()
-    if not parts:
-        return
+        gid = str(message.guild.id)
+        parts = message.content.split()
+        if parts:
+            trigger = parts[0][1:]
 
-    trigger = parts[0][1:]
+            if gid in snippets and trigger in snippets[gid]:
+                entry = snippets[gid][trigger]
+                content = entry["content"]
+                is_dynamic = entry.get("dynamic", False)
 
-    if gid in snippets and trigger in snippets[gid]:
-        entry = snippets[gid][trigger]
-        content = entry["content"]
-        is_dynamic = entry.get("dynamic", False)
+                # Delete the original trigger message to keep channels clean
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    pass
 
-        # Delete the original trigger message to keep channels clean
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            pass
+                if is_dynamic:
+                    # Replace placeholders {1}, {2}, ... globally.
+                    args = parts[1:]
+                    for i, arg in enumerate(args, start=1):
+                        content = content.replace(f"{{{i}}}", arg)
+                    # Remove any unused {n} placeholders
+                    content = re.sub(r"\{\d+\}", "", content)
 
-        if is_dynamic:
-            # Replace placeholders {1}, {2}, ... globally.
-            args = parts[1:]
-            for i, arg in enumerate(args, start=1):
-                content = content.replace(f"{{{i}}}", arg)
-            # Remove any unused {n} placeholders
-            content = re.sub(r"\{\d+\}", "", content)
+                # If the snippet was used as a reply, mention the original author first.
+                if message.reference and message.reference.message_id:
+                    try:
+                        replied = await message.channel.fetch_message(message.reference.message_id)
+                        content = f"{replied.author.mention} {content}"
+                    except discord.NotFound:
+                        pass
 
-        # If the snippet was used as a reply, mention the original author first.
-        if message.reference and message.reference.message_id:
-            try:
-                replied = await message.channel.fetch_message(message.reference.message_id)
-                content = f"{replied.author.mention} {content}"
-            except discord.NotFound:
-                pass
+                try:
+                    await message.channel.send(content)
+                except discord.Forbidden:
+                    await message.channel.send(
+                        f"⚠️ I don't have permission to send messages! Snippet would be: {content}"
+                    )
 
-        try:
-            await message.channel.send(content)
-        except discord.Forbidden:
-            await message.channel.send(f"⚠️ I don't have permission to send messages! Snippet would be: {content}")
+                return
 
-    # Keep slash commands working
+    # Keep slash commands and prefixed commands working
     await bot.process_commands(message)
 
 # =====================================================
