@@ -826,6 +826,62 @@ async def start_giveaway(
 # Snippet Commands (with migration + dynamic placeholders)
 # =====================================================
 
+class SnippetEditModal(discord.ui.Modal):
+    """Modal that allows editing snippet content with multiline support."""
+
+    def __init__(
+        self,
+        *,
+        guild_id: str,
+        trigger: str,
+        initial_content: str = "",
+        dynamic: Optional[bool] = None,
+        existed: bool = True,
+    ) -> None:
+        title = f"Snippet: !{trigger}" if trigger else "Snippet Editor"
+        super().__init__(title=title[:45])  # Discord limits modal titles to 45 chars
+
+        self.guild_id = guild_id
+        self.trigger = trigger
+        self.dynamic = dynamic
+        self.existed = existed
+
+        self.content_input = discord.ui.TextInput(
+            label="Snippet Content",
+            style=discord.TextStyle.paragraph,
+            default=initial_content[:1900],  # stay well under 2000 char limit
+            max_length=1900,
+            placeholder="Enter the snippet text. Supports new lines.",
+            required=True,
+        )
+
+        self.add_item(self.content_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        content = str(self.content_input.value).strip()
+
+        if not content:
+            return await interaction.response.send_message(
+                "❌ Snippet content cannot be empty.", ephemeral=True
+            )
+
+        guild_snippets = snippets.setdefault(self.guild_id, {})
+        existing_entry = guild_snippets.get(self.trigger, {})
+        dynamic_flag = (
+            existing_entry.get("dynamic", False)
+            if self.dynamic is None
+            else bool(self.dynamic)
+        )
+
+        guild_snippets[self.trigger] = {"content": content, "dynamic": dynamic_flag}
+        save_snippets()
+
+        action = "updated" if self.existed else "created"
+        await interaction.response.send_message(
+            f"✅ Snippet `!{self.trigger}` {action}.", ephemeral=True
+        )
+
+
 @bot.tree.command(name="addsnippet", description="Add a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)", content="Content to send")
 async def add_snippet(interaction: discord.Interaction, trigger: str, content: str):
@@ -875,6 +931,45 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
         save_snippets()
         return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="advancededitsnippet",
+    description="Open a modal to edit snippet content with multiline support",
+)
+@app_commands.describe(
+    trigger="Trigger word (no !)",
+    dynamic="Optional override for dynamic mode (leave blank to keep current)",
+)
+async def advanced_edit_snippet(
+    interaction: discord.Interaction, trigger: str, dynamic: Optional[bool] = None
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    existing = snippets.get(gid, {}).get(trigger)
+
+    if existing:
+        initial_content = existing.get("content", "")
+        default_dynamic = existing.get("dynamic", False)
+        existed = True
+    else:
+        initial_content = ""
+        default_dynamic = False
+        existed = False
+
+    modal = SnippetEditModal(
+        guild_id=gid,
+        trigger=trigger,
+        initial_content=initial_content,
+        dynamic=dynamic if dynamic is not None else default_dynamic,
+        existed=existed,
+    )
+
+    await interaction.response.send_modal(modal)
+
 
 @bot.tree.command(name="removesnippet", description="Remove a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)")
