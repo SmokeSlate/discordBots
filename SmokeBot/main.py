@@ -559,14 +559,16 @@ def load_auto_replies():
         for name, data in list(replies.items()):
             if not isinstance(data, dict):
                 raw[guild_id][name] = ensure_autoreply_defaults({
-                    "pattern": str(data),
-                    "response": "",
+                    "pattern": name,
+                    "response": str(data),
                     "dynamic": False,
                 })
                 migrated = True
             else:
                 before = dict(data)
                 raw[guild_id][name] = ensure_autoreply_defaults(data)
+                if not raw[guild_id][name].get("pattern"):
+                    raw[guild_id][name]["pattern"] = name
                 if raw[guild_id][name] != before:
                     migrated = True
 
