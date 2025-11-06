@@ -65,6 +65,7 @@ reaction_roles = {}
 ticket_data = {}
 snippets = {}  # unified format after migration
 giveaways = {}
+auto_replies = {}
 
 # =====================================================
 # Permissions Checkers
@@ -107,6 +108,15 @@ def load_giveaways():
 
 def save_giveaways():
     write_json('giveaways.json', giveaways)
+
+
+def load_auto_replies():
+    global auto_replies
+    auto_replies = read_json('auto_replies.json', {})
+
+
+def save_auto_replies():
+    write_json('auto_replies.json', auto_replies)
 
 # =====================================================
 # Giveaway Helpers and Views
@@ -370,6 +380,22 @@ def load_snippets():
 def save_snippets():
     write_json('snippets.json', snippets)
 
+
+def render_snippet_content(guild_id: str, trigger: str, args: Optional[list[str]] = None) -> Optional[str]:
+    guild_snippets = snippets.get(guild_id, {})
+    entry = guild_snippets.get(trigger)
+    if not entry:
+        return None
+
+    content = entry.get("content", "")
+    if entry.get("dynamic"):
+        args = args or []
+        for i, arg in enumerate(args, start=1):
+            content = content.replace(f"{{{i}}}", arg)
+        content = re.sub(r"\{\d+\}", "", content)
+
+    return content
+
 # =====================================================
 # Ticket Categories (Customizable)
 # =====================================================
@@ -426,6 +452,7 @@ async def on_ready():
     load_ticket_data()
     load_snippets()
     load_giveaways()
+    load_auto_replies()
 
     for message_id, data in list(giveaways.items()):
         if data.get("ended"):
@@ -1010,6 +1037,218 @@ async def list_snippets(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # =====================================================
+# Automatic reply helpers & handlers
+# =====================================================
+
+
+def parse_role_ids(raw: Optional[str]) -> list[int]:
+    if not raw:
+        return []
+
+    ids: list[int] = []
+    for match in re.finditer(r"<@&(\d+)>", raw):
+        ids.append(int(match.group(1)))
+
+    for token in raw.split():
+        if token.isdigit():
+            ids.append(int(token))
+
+    seen: set[int] = set()
+    unique_ids: list[int] = []
+    for role_id in ids:
+        if role_id not in seen:
+            seen.add(role_id)
+            unique_ids.append(role_id)
+
+    return unique_ids
+
+
+async def maybe_handle_auto_reply(message: discord.Message) -> bool:
+    if message.author.bot or not message.guild or message.content.startswith("!"):
+        return False
+
+    gid = str(message.guild.id)
+    guild_replies = auto_replies.get(gid, [])
+    if not guild_replies:
+        return False
+
+    content_lower = message.content.lower()
+    author_roles = getattr(message.author, "roles", [])
+    author_role_ids = {role.id for role in author_roles if isinstance(role, discord.Role)}
+
+    triggered = False
+    for entry in guild_replies:
+        keyword = entry.get("keyword", "")
+        if not keyword:
+            continue
+
+        if keyword.lower() not in content_lower:
+            continue
+
+        required_roles = entry.get("allowed_role_ids") or []
+        if required_roles:
+            if not author_role_ids.intersection(required_roles):
+                continue
+
+        snippet_trigger = entry.get("snippet_trigger")
+        response_text = entry.get("response")
+
+        try:
+            if snippet_trigger:
+                snippet_content = render_snippet_content(gid, snippet_trigger.lstrip("!"), [])
+                if snippet_content:
+                    await message.channel.send(snippet_content)
+                    triggered = True
+                    continue
+                if not response_text:
+                    continue
+
+            if response_text:
+                await message.channel.send(response_text)
+                triggered = True
+        except discord.Forbidden:
+            pass
+
+    return triggered
+
+
+# =====================================================
+# Auto Reply Commands
+# =====================================================
+
+
+@bot.tree.command(name="addautoreply", description="Add an automatic reply triggered by a keyword")
+@app_commands.describe(
+    keyword="Substring that should trigger the reply (case-insensitive)",
+    response="Message to send back (ignored if snippet_trigger is provided)",
+    snippet_trigger="Existing snippet trigger to send instead of plain text",
+    allowed_roles="Role mentions or IDs that the author must have (space separated)",
+)
+async def add_auto_reply(
+    interaction: discord.Interaction,
+    keyword: str,
+    response: Optional[str] = None,
+    snippet_trigger: Optional[str] = None,
+    allowed_roles: Optional[str] = None,
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    keyword = keyword.strip()
+    if not keyword:
+        return await interaction.response.send_message("❌ Keyword cannot be empty.", ephemeral=True)
+
+    if not response and not snippet_trigger:
+        return await interaction.response.send_message(
+            "❌ Provide a response message or a snippet trigger.", ephemeral=True
+        )
+
+    if response:
+        response = response.strip()
+
+    gid = str(interaction.guild.id)
+    snippet_name = snippet_trigger.lstrip("!") if snippet_trigger else None
+    if snippet_name:
+        if gid not in snippets or snippet_name not in snippets[gid]:
+            return await interaction.response.send_message(
+                f"❌ Snippet `!{snippet_name}` not found.", ephemeral=True
+            )
+
+    entry_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+    role_ids = parse_role_ids(allowed_roles)
+
+    entry = {
+        "id": entry_id,
+        "keyword": keyword,
+        "response": response or None,
+        "snippet_trigger": snippet_name,
+        "allowed_role_ids": role_ids,
+    }
+
+    auto_replies.setdefault(gid, []).append(entry)
+    save_auto_replies()
+
+    summary_parts = [f"Keyword `{keyword}`"]
+    if snippet_name:
+        summary_parts.append(f"will send snippet `!{snippet_name}`")
+    elif response:
+        summary_parts.append("will send your custom response")
+
+    if role_ids:
+        mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
+        summary_parts.append(f"(requires roles: {mentions})")
+
+    confirmation = " ".join(summary_parts)
+    await interaction.response.send_message(f"✅ {confirmation}.", ephemeral=True)
+
+
+@bot.tree.command(name="removeautoreply", description="Remove an automatic reply by ID or keyword")
+@app_commands.describe(identifier="ID from /listautoreplies or the keyword itself")
+async def remove_auto_reply(interaction: discord.Interaction, identifier: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    entries = auto_replies.get(gid, [])
+    if not entries:
+        return await interaction.response.send_message("No automatic replies configured.", ephemeral=True)
+
+    identifier_lower = identifier.lower()
+    updated: list[dict] = []
+    removed = False
+    for entry in entries:
+        if entry.get("id") == identifier or entry.get("keyword", "").lower() == identifier_lower:
+            removed = True
+            continue
+        updated.append(entry)
+
+    if not removed:
+        return await interaction.response.send_message("❌ Automatic reply not found.", ephemeral=True)
+
+    if updated:
+        auto_replies[gid] = updated
+    else:
+        auto_replies.pop(gid, None)
+
+    save_auto_replies()
+    await interaction.response.send_message("✅ Automatic reply removed.", ephemeral=True)
+
+
+@bot.tree.command(name="listautoreplies", description="List automatic replies configured for this server")
+async def list_auto_replies(interaction: discord.Interaction):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    entries = auto_replies.get(gid, [])
+    if not entries:
+        return await interaction.response.send_message("No automatic replies configured.", ephemeral=True)
+
+    embed = discord.Embed(title="🤖 Automatic Replies", color=discord.Color.blurple())
+    for entry in entries:
+        keyword = entry.get("keyword", "-" )
+        entry_id = entry.get("id", "?")
+        snippet_name = entry.get("snippet_trigger")
+        response_text = entry.get("response")
+        role_ids = entry.get("allowed_role_ids") or []
+
+        lines = [f"ID: `{entry_id}`"]
+        if snippet_name:
+            lines.append(f"Sends snippet: `!{snippet_name}`")
+        elif response_text:
+            preview = response_text if len(response_text) <= 60 else response_text[:57] + "..."
+            lines.append(f"Response: {preview}")
+
+        if role_ids:
+            mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
+            lines.append(f"Required roles: {mentions}")
+
+        embed.add_field(name=f"Keyword: `{keyword}`", value="\n".join(lines), inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =====================================================
 # on_message handler (pins → then snippets with placeholders)
 # =====================================================
 
@@ -1020,6 +1259,9 @@ async def on_message(message):
 
     # Pinned message reposting
     await handle_pin_repost(message)
+
+    # Automatic replies based on message content
+    await maybe_handle_auto_reply(message)
 
     # Snippet handling (messages starting with "!")
     if message.content.startswith("!"):
@@ -1032,23 +1274,16 @@ async def on_message(message):
             trigger = parts[0][1:]
 
             if gid in snippets and trigger in snippets[gid]:
-                entry = snippets[gid][trigger]
-                content = entry["content"]
-                is_dynamic = entry.get("dynamic", False)
+                args = parts[1:]
+                content = render_snippet_content(gid, trigger, args)
+                if content is None:
+                    return
 
                 # Delete the original trigger message to keep channels clean
                 try:
                     await message.delete()
                 except discord.Forbidden:
                     pass
-
-                if is_dynamic:
-                    # Replace placeholders {1}, {2}, ... globally.
-                    args = parts[1:]
-                    for i, arg in enumerate(args, start=1):
-                        content = content.replace(f"{{{i}}}", arg)
-                    # Remove any unused {n} placeholders
-                    content = re.sub(r"\{\d+\}", "", content)
 
                 # If the snippet was used as a reply, mention the original author first.
                 if message.reference and message.reference.message_id:
