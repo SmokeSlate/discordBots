@@ -15,7 +15,7 @@ import json
 import os
 import random
 import re
-from typing import Optional
+from typing import Optional, Tuple, List
 from datetime import datetime, timedelta
 
 # =====================================================
@@ -64,6 +64,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 reaction_roles = {}
 ticket_data = {}
 snippets = {}  # unified format after migration
+snippet_cooldowns = {}
 giveaways = {}
 
 # =====================================================
@@ -341,6 +342,18 @@ class GiveawayJoinView(discord.ui.View):
 # }
 # =====================================================
 
+def ensure_snippet_defaults(entry: dict) -> dict:
+    entry.setdefault("content", "")
+    entry.setdefault("dynamic", False)
+    entry.setdefault("match_regex", None)
+    entry.setdefault("include_roles", [])
+    entry.setdefault("exclude_roles", [])
+    entry.setdefault("exclude_channels", [])
+    entry.setdefault("cooldown_seconds", 0)
+    entry.setdefault("cooldown_scope", "guild")
+    return entry
+
+
 def load_snippets():
     """Load snippets and migrate any old formats to the unified object format."""
     global snippets
@@ -354,13 +367,12 @@ def load_snippets():
                 raw[guild_id][trigger] = {"content": value, "dynamic": False}
                 migrated = True
             elif isinstance(value, dict):
-                # Ensure required keys exist
-                if "content" not in value:
-                    raw[guild_id][trigger]["content"] = ""
+                before = dict(value)
+                ensure_snippet_defaults(raw[guild_id][trigger])
+                if raw[guild_id][trigger] != before:
                     migrated = True
-                if "dynamic" not in value:
-                    raw[guild_id][trigger]["dynamic"] = False
-                    migrated = True
+
+            raw[guild_id][trigger] = ensure_snippet_defaults(raw[guild_id][trigger])
 
     if migrated:
         write_json('snippets.json', raw)
@@ -369,6 +381,232 @@ def load_snippets():
 
 def save_snippets():
     write_json('snippets.json', snippets)
+
+
+def extract_numeric_id(token: str) -> Optional[int]:
+    match = re.search(r"\d+", token or "")
+    return int(match.group(0)) if match else None
+
+
+def parse_role_input(guild: discord.Guild, raw: Optional[str]) -> Tuple[List[str], List[str]]:
+    if not raw:
+        return [], []
+
+    values = []
+    invalid = []
+    for token in re.split(r"[\s,]+", raw.strip()):
+        if not token:
+            continue
+        rid = extract_numeric_id(token)
+        role = guild.get_role(rid) if rid else None
+        if role:
+            values.append(str(role.id))
+        else:
+            invalid.append(token)
+    return values, invalid
+
+
+def parse_channel_input(guild: discord.Guild, raw: Optional[str]) -> Tuple[List[str], List[str]]:
+    if not raw:
+        return [], []
+
+    values = []
+    invalid = []
+    for token in re.split(r"[\s,]+", raw.strip()):
+        if not token:
+            continue
+        cid = extract_numeric_id(token)
+        channel = guild.get_channel_or_thread(cid) if cid else None
+        if channel:
+            values.append(str(channel.id))
+        else:
+            invalid.append(token)
+    return values, invalid
+
+
+def parse_duration_string(raw: Optional[str]) -> Tuple[Optional[int], Optional[str]]:
+    if raw is None:
+        return None, None
+
+    text = raw.strip().lower()
+    if not text or text in {"none", "off", "clear", "disable", "disabled"}:
+        return 0, None
+
+    if text.isdigit():
+        seconds = int(text)
+        if seconds < 0:
+            return None, "Duration cannot be negative."
+        return seconds, None
+
+    total = 0
+    matches = list(re.finditer(r"(\d+)([smhd])", text))
+    if not matches:
+        return None, "Use formats like 30s, 5m, 2h, or 1d (combinable)."
+
+    for match in matches:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        multiplier = {
+            's': 1,
+            'm': 60,
+            'h': 3600,
+            'd': 86400,
+        }[unit]
+        total += amount * multiplier
+
+    return total, None
+
+
+def format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "disabled"
+
+    parts = []
+    remainder = seconds
+    days, remainder = divmod(remainder, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, remainder = divmod(remainder, 60)
+    secs = remainder
+
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs and not parts:
+        parts.append(f"{secs}s")
+    elif secs:
+        parts.append(f"{secs}s")
+
+    return " ".join(parts)
+
+
+def determine_cooldown_bucket(entry: dict, message: discord.Message) -> Tuple[Optional[str], int]:
+    seconds = int(entry.get("cooldown_seconds") or 0)
+    if seconds <= 0 or not message.guild:
+        return None, seconds
+
+    scope = str(entry.get("cooldown_scope") or "guild").lower()
+    if scope == "user":
+        bucket = f"user:{message.author.id}"
+    elif scope == "member":
+        bucket = f"member:{message.guild.id}:{message.author.id}"
+    elif scope == "channel":
+        bucket = f"channel:{message.channel.id}"
+    else:
+        bucket = f"guild:{message.guild.id}"
+    return bucket, seconds
+
+
+def snippet_on_cooldown(guild_id: str, trigger: str, bucket: Optional[str], seconds: int) -> Tuple[bool, int]:
+    if not bucket or seconds <= 0:
+        return False, 0
+
+    now = datetime.utcnow().timestamp()
+    trigger_cooldowns = snippet_cooldowns.setdefault(guild_id, {}).setdefault(trigger, {})
+    last = trigger_cooldowns.get(bucket)
+    if last and now - last < seconds:
+        remaining = int(seconds - (now - last))
+        return True, max(0, remaining)
+    return False, 0
+
+
+def mark_snippet_cooldown(guild_id: str, trigger: str, bucket: Optional[str]):
+    if not bucket:
+        return
+    trigger_cooldowns = snippet_cooldowns.setdefault(guild_id, {}).setdefault(trigger, {})
+    trigger_cooldowns[bucket] = datetime.utcnow().timestamp()
+
+
+def member_role_ids(member: discord.Member) -> List[str]:
+    return [str(role.id) for role in getattr(member, "roles", []) if getattr(role, "id", None)]
+
+
+def snippet_restrictions_pass(entry: dict, message: discord.Message) -> bool:
+    if not message.guild:
+        return False
+
+    author_roles = set(member_role_ids(message.author))
+    include_roles = set(entry.get("include_roles") or [])
+    exclude_roles = set(entry.get("exclude_roles") or [])
+    exclude_channels = set(entry.get("exclude_channels") or [])
+
+    if include_roles and not (author_roles & include_roles):
+        return False
+
+    if exclude_roles and (author_roles & exclude_roles):
+        return False
+
+    if exclude_channels and str(message.channel.id) in exclude_channels:
+        return False
+
+    return True
+
+
+async def render_snippet_content(
+    message: discord.Message,
+    entry: dict,
+    args: List[str],
+) -> str:
+    content = entry.get("content", "")
+    if entry.get("dynamic"):
+        for i, value in enumerate(args, start=1):
+            content = content.replace(f"{{{i}}}", value)
+        content = re.sub(r"\{\d+\}", "", content)
+
+    if "{ping}" in content:
+        mention_target = None
+        if message.reference and message.reference.message_id:
+            try:
+                replied = await message.channel.fetch_message(message.reference.message_id)
+                mention_target = replied.author
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                mention_target = None
+        if not mention_target:
+            mention_target = message.author
+
+        replacement = mention_target.mention if mention_target else ""
+        content = content.replace("{ping}", replacement)
+
+    return content
+
+
+async def dispatch_snippet(
+    message: discord.Message,
+    trigger: str,
+    entry: dict,
+    args: List[str],
+    *,
+    delete_trigger: bool = False,
+) -> bool:
+    gid = str(message.guild.id)
+    bucket, seconds = determine_cooldown_bucket(entry, message)
+    on_cooldown, _ = snippet_on_cooldown(gid, trigger, bucket, seconds)
+    if on_cooldown:
+        return False
+
+    if delete_trigger:
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            pass
+
+    content = await render_snippet_content(message, entry, args)
+
+    try:
+        await message.channel.send(content)
+    except discord.Forbidden:
+        try:
+            await message.channel.send(
+                f"⚠️ I don't have permission to send messages! Snippet would be: {content}"
+            )
+        except discord.HTTPException:
+            return False
+    except discord.HTTPException:
+        return False
+    mark_snippet_cooldown(gid, trigger, bucket)
+    return True
 
 # =====================================================
 # Ticket Categories (Customizable)
@@ -826,6 +1064,64 @@ async def start_giveaway(
 # Snippet Commands (with migration + dynamic placeholders)
 # =====================================================
 
+class SnippetEditModal(discord.ui.Modal):
+    """Modal that allows editing snippet content with multiline support."""
+
+    def __init__(
+        self,
+        *,
+        guild_id: str,
+        trigger: str,
+        initial_content: str = "",
+        dynamic: Optional[bool] = None,
+        existed: bool = True,
+    ) -> None:
+        title = f"Snippet: !{trigger}" if trigger else "Snippet Editor"
+        super().__init__(title=title[:45])  # Discord limits modal titles to 45 chars
+
+        self.guild_id = guild_id
+        self.trigger = trigger
+        self.dynamic = dynamic
+        self.existed = existed
+
+        self.content_input = discord.ui.TextInput(
+            label="Snippet Content",
+            style=discord.TextStyle.paragraph,
+            default=initial_content[:1900],  # stay well under 2000 char limit
+            max_length=1900,
+            placeholder="Enter the snippet text. Supports new lines.",
+            required=True,
+        )
+
+        self.add_item(self.content_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        content = str(self.content_input.value).strip()
+
+        if not content:
+            return await interaction.response.send_message(
+                "❌ Snippet content cannot be empty.", ephemeral=True
+            )
+
+        guild_snippets = snippets.setdefault(self.guild_id, {})
+        existing_entry = ensure_snippet_defaults(guild_snippets.get(self.trigger, {}))
+        dynamic_flag = (
+            existing_entry.get("dynamic", False)
+            if self.dynamic is None
+            else bool(self.dynamic)
+        )
+
+        existing_entry["content"] = content
+        existing_entry["dynamic"] = dynamic_flag
+        guild_snippets[self.trigger] = ensure_snippet_defaults(existing_entry)
+        save_snippets()
+
+        action = "updated" if self.existed else "created"
+        await interaction.response.send_message(
+            f"✅ Snippet `!{self.trigger}` {action}.", ephemeral=True
+        )
+
+
 @bot.tree.command(name="addsnippet", description="Add a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)", content="Content to send")
 async def add_snippet(interaction: discord.Interaction, trigger: str, content: str):
@@ -833,7 +1129,8 @@ async def add_snippet(interaction: discord.Interaction, trigger: str, content: s
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
-    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": False}
+    entry = ensure_snippet_defaults({"content": content, "dynamic": False})
+    snippets.setdefault(gid, {})[trigger] = entry
     save_snippets()
     await interaction.response.send_message(f"✅ Static snippet `!{trigger}` added.", ephemeral=True)
 
@@ -844,7 +1141,8 @@ async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, co
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
-    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": True}
+    entry = ensure_snippet_defaults({"content": content, "dynamic": True})
+    snippets.setdefault(gid, {})[trigger] = entry
     save_snippets()
     await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` added.", ephemeral=True)
 
@@ -856,8 +1154,10 @@ async def edit_snippet(interaction: discord.Interaction, trigger: str, content: 
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
     if gid in snippets and trigger in snippets[gid]:
-        snippets[gid][trigger]["content"] = content
-        snippets[gid][trigger]["dynamic"] = False
+        entry = ensure_snippet_defaults(snippets[gid][trigger])
+        entry["content"] = content
+        entry["dynamic"] = False
+        snippets[gid][trigger] = entry
         save_snippets()
         return await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
@@ -870,11 +1170,52 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
     if gid in snippets and trigger in snippets[gid]:
-        snippets[gid][trigger]["content"] = content
-        snippets[gid][trigger]["dynamic"] = bool(dynamic)
+        entry = ensure_snippet_defaults(snippets[gid][trigger])
+        entry["content"] = content
+        entry["dynamic"] = bool(dynamic)
+        snippets[gid][trigger] = entry
         save_snippets()
         return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="advancededitsnippet",
+    description="Open a modal to edit snippet content with multiline support",
+)
+@app_commands.describe(
+    trigger="Trigger word (no !)",
+    dynamic="Optional override for dynamic mode (leave blank to keep current)",
+)
+async def advanced_edit_snippet(
+    interaction: discord.Interaction, trigger: str, dynamic: Optional[bool] = None
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    existing = snippets.get(gid, {}).get(trigger)
+
+    if existing:
+        initial_content = existing.get("content", "")
+        default_dynamic = existing.get("dynamic", False)
+        existed = True
+    else:
+        initial_content = ""
+        default_dynamic = False
+        existed = False
+
+    modal = SnippetEditModal(
+        guild_id=gid,
+        trigger=trigger,
+        initial_content=initial_content,
+        dynamic=dynamic if dynamic is not None else default_dynamic,
+        existed=existed,
+    )
+
+    await interaction.response.send_modal(modal)
+
 
 @bot.tree.command(name="removesnippet", description="Remove a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)")
@@ -914,6 +1255,125 @@ async def list_snippets(interaction: discord.Interaction):
         embed.add_field(name=f"!{trig} {label}", value=preview or "-", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+@bot.tree.command(name="snippetoptions", description="Configure snippet regex matching and restrictions")
+@app_commands.describe(
+    trigger="Trigger word (no !)",
+    match_regex="Regex to match messages automatically (leave blank to keep current)",
+    include_roles="Roles required (mentions/IDs, comma or space separated)",
+    exclude_roles="Roles that block usage (mentions/IDs)",
+    exclude_channels="Channels to ignore (mentions/IDs)",
+    cooldown="Cooldown like 30s, 5m, 1h, 1d (0/none to disable)",
+)
+@app_commands.choices(
+    cooldown_scope=[
+        app_commands.Choice(name="Per Guild", value="guild"),
+        app_commands.Choice(name="Per Channel", value="channel"),
+        app_commands.Choice(name="Per User", value="user"),
+        app_commands.Choice(name="Per Member", value="member"),
+    ]
+)
+async def snippet_options(
+    interaction: discord.Interaction,
+    trigger: str,
+    match_regex: Optional[str] = None,
+    include_roles: Optional[str] = None,
+    exclude_roles: Optional[str] = None,
+    exclude_channels: Optional[str] = None,
+    cooldown: Optional[str] = None,
+    cooldown_scope: Optional[app_commands.Choice[str]] = None,
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+
+    trigger = trigger.lstrip("!")
+    gid = str(interaction.guild.id)
+    guild_snippets = snippets.setdefault(gid, {})
+    if trigger not in guild_snippets:
+        return await interaction.response.send_message("❌ Snippet not found. Create it first.", ephemeral=True)
+
+    entry = ensure_snippet_defaults(guild_snippets[trigger])
+
+    if match_regex is not None:
+        regex_value = match_regex.strip()
+        if not regex_value:
+            entry["match_regex"] = None
+        else:
+            try:
+                re.compile(regex_value)
+            except re.error as exc:
+                return await interaction.response.send_message(
+                    f"❌ Invalid regex: {exc}", ephemeral=True
+                )
+            entry["match_regex"] = regex_value
+
+    if include_roles is not None:
+        if include_roles.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["include_roles"] = []
+        else:
+            parsed, invalid = parse_role_input(interaction.guild, include_roles)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown roles: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["include_roles"] = sorted(set(parsed), key=int)
+
+    if exclude_roles is not None:
+        if exclude_roles.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["exclude_roles"] = []
+        else:
+            parsed, invalid = parse_role_input(interaction.guild, exclude_roles)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown roles: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["exclude_roles"] = sorted(set(parsed), key=int)
+
+    if exclude_channels is not None:
+        if exclude_channels.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["exclude_channels"] = []
+        else:
+            parsed, invalid = parse_channel_input(interaction.guild, exclude_channels)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown channels: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["exclude_channels"] = sorted(set(parsed), key=int)
+
+    if cooldown is not None:
+        seconds, error = parse_duration_string(cooldown)
+        if error:
+            return await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+        if seconds is not None:
+            entry["cooldown_seconds"] = int(seconds)
+
+    if cooldown_scope is not None:
+        entry["cooldown_scope"] = cooldown_scope.value
+
+    guild_snippets[trigger] = ensure_snippet_defaults(entry)
+    save_snippets()
+
+    include_mentions = [interaction.guild.get_role(int(rid)).mention for rid in entry.get("include_roles", []) if interaction.guild.get_role(int(rid))]
+    exclude_mentions = [interaction.guild.get_role(int(rid)).mention for rid in entry.get("exclude_roles", []) if interaction.guild.get_role(int(rid))]
+    excluded_channels = [interaction.guild.get_channel(int(cid)).mention for cid in entry.get("exclude_channels", []) if interaction.guild.get_channel(int(cid))]
+
+    regex_status = entry.get("match_regex") or "disabled"
+    cooldown_seconds = int(entry.get("cooldown_seconds") or 0)
+    scope_label = entry.get("cooldown_scope", "guild")
+
+    summary_lines = [
+        f"Regex match: `{regex_status}`" if entry.get("match_regex") else "Regex match: disabled",
+        f"Requires roles: {', '.join(include_mentions)}" if include_mentions else "Requires roles: none",
+        f"Blocked roles: {', '.join(exclude_mentions)}" if exclude_mentions else "Blocked roles: none",
+        f"Ignored channels: {', '.join(excluded_channels)}" if excluded_channels else "Ignored channels: none",
+        f"Cooldown: {format_duration(cooldown_seconds)} ({scope_label})" if cooldown_seconds else "Cooldown: disabled",
+    ]
+
+    await interaction.response.send_message(
+        "✅ Snippet options updated:\n" + "\n".join(summary_lines),
+        ephemeral=True,
+    )
+
 # =====================================================
 # on_message handler (pins → then snippets with placeholders)
 # =====================================================
@@ -926,50 +1386,55 @@ async def on_message(message):
     # Pinned message reposting
     await handle_pin_repost(message)
 
-    # Snippet handling (messages starting with "!")
-    if not message.content.startswith("!"):
-        return
+    if message.guild:
+        gid = str(message.guild.id)
+        guild_snippets = snippets.get(gid, {})
 
-    gid = str(message.guild.id)
-    parts = message.content.split()
-    if not parts:
-        return
+        if message.content.startswith("!"):
+            parts = message.content.split()
+            if parts:
+                trigger = parts[0][1:]
+                entry = guild_snippets.get(trigger)
+                if entry and snippet_restrictions_pass(entry, message):
+                    args = parts[1:] if entry.get("dynamic") else []
+                    handled = await dispatch_snippet(
+                        message,
+                        trigger,
+                        entry,
+                        args,
+                        delete_trigger=True,
+                    )
+                    if handled:
+                        return
 
-    trigger = parts[0][1:]
+        for trig, entry in guild_snippets.items():
+            regex_pattern = entry.get("match_regex")
+            if not regex_pattern:
+                continue
 
-    if gid in snippets and trigger in snippets[gid]:
-        entry = snippets[gid][trigger]
-        content = entry["content"]
-        is_dynamic = entry.get("dynamic", False)
-
-        # Delete the original trigger message to keep channels clean
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            pass
-
-        if is_dynamic:
-            # Replace placeholders {1}, {2}, ... globally.
-            args = parts[1:]
-            for i, arg in enumerate(args, start=1):
-                content = content.replace(f"{{{i}}}", arg)
-            # Remove any unused {n} placeholders
-            content = re.sub(r"\{\d+\}", "", content)
-
-        # If the snippet was used as a reply, mention the original author first.
-        if message.reference and message.reference.message_id:
             try:
-                replied = await message.channel.fetch_message(message.reference.message_id)
-                content = f"{replied.author.mention} {content}"
-            except discord.NotFound:
-                pass
+                match = re.search(regex_pattern, message.content)
+            except re.error:
+                continue
 
-        try:
-            await message.channel.send(content)
-        except discord.Forbidden:
-            await message.channel.send(f"⚠️ I don't have permission to send messages! Snippet would be: {content}")
+            if not match:
+                continue
 
-    # Keep slash commands working
+            if not snippet_restrictions_pass(entry, message):
+                continue
+
+            args = list(match.groups()) if entry.get("dynamic") else []
+            handled = await dispatch_snippet(
+                message,
+                trig,
+                entry,
+                args,
+                delete_trigger=False,
+            )
+            if handled:
+                return
+
+    # Keep slash commands and prefixed commands working
     await bot.process_commands(message)
 
 # =====================================================
