@@ -15,8 +15,7 @@ import json
 import os
 import random
 import re
-import time
-from typing import Optional
+from typing import Optional, Tuple, List
 from datetime import datetime, timedelta
 
 # =====================================================
@@ -65,10 +64,9 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 reaction_roles = {}
 ticket_data = {}
 snippets = {}  # unified format after migration
-giveaways = {}
 auto_replies = {}
-auto_reply_role_exclude_cache: dict[str, re.Pattern] = {}
-auto_reply_cooldowns: dict[str, dict[str, dict[str, float]]] = {}
+autoreply_cooldowns = {}
+giveaways = {}
 
 # =====================================================
 # Permissions Checkers
@@ -111,17 +109,6 @@ def load_giveaways():
 
 def save_giveaways():
     write_json('giveaways.json', giveaways)
-
-
-def load_auto_replies():
-    global auto_replies
-    auto_replies = read_json('auto_replies.json', {})
-    auto_reply_role_exclude_cache.clear()
-    auto_reply_cooldowns.clear()
-
-
-def save_auto_replies():
-    write_json('auto_replies.json', auto_replies)
 
 # =====================================================
 # Giveaway Helpers and Views
@@ -356,6 +343,12 @@ class GiveawayJoinView(discord.ui.View):
 # }
 # =====================================================
 
+def ensure_snippet_defaults(entry: dict) -> dict:
+    entry.setdefault("content", "")
+    entry.setdefault("dynamic", False)
+    return entry
+
+
 def load_snippets():
     """Load snippets and migrate any old formats to the unified object format."""
     global snippets
@@ -369,13 +362,12 @@ def load_snippets():
                 raw[guild_id][trigger] = {"content": value, "dynamic": False}
                 migrated = True
             elif isinstance(value, dict):
-                # Ensure required keys exist
-                if "content" not in value:
-                    raw[guild_id][trigger]["content"] = ""
+                before = dict(value)
+                ensure_snippet_defaults(raw[guild_id][trigger])
+                if raw[guild_id][trigger] != before:
                     migrated = True
-                if "dynamic" not in value:
-                    raw[guild_id][trigger]["dynamic"] = False
-                    migrated = True
+
+            raw[guild_id][trigger] = ensure_snippet_defaults(raw[guild_id][trigger])
 
     if migrated:
         write_json('snippets.json', raw)
@@ -386,20 +378,333 @@ def save_snippets():
     write_json('snippets.json', snippets)
 
 
-def render_snippet_content(guild_id: str, trigger: str, args: Optional[list[str]] = None) -> Optional[str]:
-    guild_snippets = snippets.get(guild_id, {})
-    entry = guild_snippets.get(trigger)
-    if not entry:
-        return None
+def extract_numeric_id(token: str) -> Optional[int]:
+    match = re.search(r"\d+", token or "")
+    return int(match.group(0)) if match else None
 
+
+def parse_role_input(guild: discord.Guild, raw: Optional[str]) -> Tuple[List[str], List[str]]:
+    if not raw:
+        return [], []
+
+    values = []
+    invalid = []
+    for token in re.split(r"[\s,]+", raw.strip()):
+        if not token:
+            continue
+        rid = extract_numeric_id(token)
+        role = guild.get_role(rid) if rid else None
+        if role:
+            values.append(str(role.id))
+        else:
+            invalid.append(token)
+    return values, invalid
+
+
+def parse_channel_input(guild: discord.Guild, raw: Optional[str]) -> Tuple[List[str], List[str]]:
+    if not raw:
+        return [], []
+
+    values = []
+    invalid = []
+    for token in re.split(r"[\s,]+", raw.strip()):
+        if not token:
+            continue
+        cid = extract_numeric_id(token)
+        channel = guild.get_channel_or_thread(cid) if cid else None
+        if channel:
+            values.append(str(channel.id))
+        else:
+            invalid.append(token)
+    return values, invalid
+
+
+def parse_duration_string(raw: Optional[str]) -> Tuple[Optional[int], Optional[str]]:
+    if raw is None:
+        return None, None
+
+    text = raw.strip().lower()
+    if not text or text in {"none", "off", "clear", "disable", "disabled"}:
+        return 0, None
+
+    if text.isdigit():
+        seconds = int(text)
+        if seconds < 0:
+            return None, "Duration cannot be negative."
+        return seconds, None
+
+    total = 0
+    matches = list(re.finditer(r"(\d+)([smhd])", text))
+    if not matches:
+        return None, "Use formats like 30s, 5m, 2h, or 1d (combinable)."
+
+    for match in matches:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        multiplier = {
+            's': 1,
+            'm': 60,
+            'h': 3600,
+            'd': 86400,
+        }[unit]
+        total += amount * multiplier
+
+    return total, None
+
+
+def format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "disabled"
+
+    parts = []
+    remainder = seconds
+    days, remainder = divmod(remainder, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, remainder = divmod(remainder, 60)
+    secs = remainder
+
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+
+    return " ".join(parts)
+
+
+async def render_snippet_content(
+    message: discord.Message,
+    entry: dict,
+    args: List[str],
+) -> str:
     content = entry.get("content", "")
     if entry.get("dynamic"):
-        args = args or []
-        for i, arg in enumerate(args, start=1):
-            content = content.replace(f"{{{i}}}", arg)
+        for i, value in enumerate(args, start=1):
+            content = content.replace(f"{{{i}}}", value)
         content = re.sub(r"\{\d+\}", "", content)
 
+    if "{ping}" in content:
+        mention_target = None
+        if message.reference and message.reference.message_id:
+            try:
+                replied = await message.channel.fetch_message(message.reference.message_id)
+                mention_target = replied.author
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                mention_target = None
+        if not mention_target:
+            mention_target = message.author
+
+        replacement = mention_target.mention if mention_target else ""
+        content = content.replace("{ping}", replacement)
+
     return content
+
+
+async def dispatch_snippet(
+    message: discord.Message,
+    trigger: str,
+    entry: dict,
+    args: List[str],
+    *,
+    delete_trigger: bool = False,
+) -> bool:
+    if delete_trigger:
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            pass
+
+    content = await render_snippet_content(message, entry, args)
+
+    try:
+        await message.channel.send(content)
+    except discord.Forbidden:
+        try:
+            await message.channel.send(
+                f"⚠️ I don't have permission to send messages! Snippet would be: {content}"
+            )
+        except discord.HTTPException:
+            return False
+    except discord.HTTPException:
+        return False
+    return True
+
+# =====================================================
+# Auto Reply Storage and Helpers
+# =====================================================
+
+
+def ensure_autoreply_defaults(entry: dict) -> dict:
+    entry.setdefault("pattern", "")
+    entry.setdefault("response", "")
+    entry.setdefault("dynamic", False)
+    entry.setdefault("include_roles", [])
+    entry.setdefault("exclude_roles", [])
+    entry.setdefault("include_channels", [])
+    entry.setdefault("exclude_channels", [])
+    entry.setdefault("cooldown_seconds", 0)
+    entry.setdefault("cooldown_scope", "guild")
+    return entry
+
+
+def load_auto_replies():
+    global auto_replies
+    raw = read_json("auto_replies.json", {})
+    migrated = False
+
+    for guild_id, replies in raw.items():
+        for name, data in list(replies.items()):
+            if not isinstance(data, dict):
+                raw[guild_id][name] = ensure_autoreply_defaults({
+                    "pattern": str(data),
+                    "response": "",
+                    "dynamic": False,
+                })
+                migrated = True
+            else:
+                before = dict(data)
+                raw[guild_id][name] = ensure_autoreply_defaults(data)
+                if raw[guild_id][name] != before:
+                    migrated = True
+
+    if migrated:
+        write_json("auto_replies.json", raw)
+
+    auto_replies = raw
+
+
+def save_auto_replies():
+    write_json("auto_replies.json", auto_replies)
+
+
+def member_role_ids(member: discord.Member) -> List[str]:
+    return [str(role.id) for role in getattr(member, "roles", []) if getattr(role, "id", None)]
+
+
+def auto_reply_restrictions_pass(entry: dict, message: discord.Message) -> bool:
+    if not message.guild:
+        return False
+
+    author_roles = set(member_role_ids(message.author))
+    include_roles = set(entry.get("include_roles") or [])
+    exclude_roles = set(entry.get("exclude_roles") or [])
+    include_channels = set(entry.get("include_channels") or [])
+    exclude_channels = set(entry.get("exclude_channels") or [])
+
+    if include_roles and not (author_roles & include_roles):
+        return False
+
+    if exclude_roles and (author_roles & exclude_roles):
+        return False
+
+    channel_id = str(getattr(message.channel, "id", ""))
+    if include_channels and channel_id not in include_channels:
+        return False
+
+    if exclude_channels and channel_id in exclude_channels:
+        return False
+
+    return True
+
+
+def determine_autoreply_cooldown_bucket(entry: dict, message: discord.Message) -> Tuple[Optional[str], int]:
+    seconds = int(entry.get("cooldown_seconds") or 0)
+    if seconds <= 0 or not message.guild:
+        return None, seconds
+
+    scope = str(entry.get("cooldown_scope") or "guild").lower()
+    if scope == "user":
+        bucket = f"user:{message.author.id}"
+    elif scope == "member":
+        bucket = f"member:{message.guild.id}:{message.author.id}"
+    elif scope == "channel":
+        bucket = f"channel:{message.channel.id}"
+    elif scope == "channel_user":
+        bucket = f"channel_user:{message.channel.id}:{message.author.id}"
+    elif scope == "thread":
+        thread_id = getattr(message.channel, "id", None)
+        bucket = f"thread:{thread_id}" if thread_id else f"channel:{message.channel.id}"
+    elif scope == "role":
+        roles = member_role_ids(message.author)
+        primary = roles[0] if roles else "norole"
+        bucket = f"role:{message.guild.id}:{primary}"
+    else:
+        bucket = f"guild:{message.guild.id}"
+
+    return bucket, seconds
+
+
+def autoreply_on_cooldown(guild_id: str, name: str, bucket: Optional[str], seconds: int) -> bool:
+    if not bucket or seconds <= 0:
+        return False
+
+    now = datetime.utcnow().timestamp()
+    trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
+    last = trigger_cooldowns.get(bucket)
+    if last and now - last < seconds:
+        return True
+    return False
+
+
+def mark_autoreply_cooldown(guild_id: str, name: str, bucket: Optional[str]):
+    if not bucket:
+        return
+    trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
+    trigger_cooldowns[bucket] = datetime.utcnow().timestamp()
+
+
+async def render_auto_reply_content(
+    message: discord.Message,
+    entry: dict,
+    match: re.Match,
+) -> str:
+    content = entry.get("response", "")
+
+    if entry.get("dynamic"):
+        groups = match.groups()
+        for i, value in enumerate(groups, start=1):
+            content = content.replace(f"{{{i}}}", value)
+        content = re.sub(r"\{\d+\}", "", content)
+
+    if "{ping}" in content:
+        content = content.replace("{ping}", message.author.mention)
+
+    return content
+
+
+async def dispatch_auto_reply(
+    message: discord.Message,
+    name: str,
+    entry: dict,
+    match: re.Match,
+) -> bool:
+    if not message.guild:
+        return False
+
+    if not auto_reply_restrictions_pass(entry, message):
+        return False
+
+    gid = str(message.guild.id)
+    bucket, seconds = determine_autoreply_cooldown_bucket(entry, message)
+    if autoreply_on_cooldown(gid, name, bucket, seconds):
+        return False
+
+    content = await render_auto_reply_content(message, entry, match)
+    if not content:
+        return False
+
+    try:
+        await message.channel.send(content)
+    except discord.Forbidden:
+        return False
+    except discord.HTTPException:
+        return False
+
+    mark_autoreply_cooldown(gid, name, bucket)
+    return True
 
 # =====================================================
 # Ticket Categories (Customizable)
@@ -456,8 +761,8 @@ async def on_ready():
     load_reaction_roles()
     load_ticket_data()
     load_snippets()
-    load_giveaways()
     load_auto_replies()
+    load_giveaways()
 
     for message_id, data in list(giveaways.items()):
         if data.get("ended"):
@@ -898,14 +1203,16 @@ class SnippetEditModal(discord.ui.Modal):
             )
 
         guild_snippets = snippets.setdefault(self.guild_id, {})
-        existing_entry = guild_snippets.get(self.trigger, {})
+        existing_entry = ensure_snippet_defaults(guild_snippets.get(self.trigger, {}))
         dynamic_flag = (
             existing_entry.get("dynamic", False)
             if self.dynamic is None
             else bool(self.dynamic)
         )
 
-        guild_snippets[self.trigger] = {"content": content, "dynamic": dynamic_flag}
+        existing_entry["content"] = content
+        existing_entry["dynamic"] = dynamic_flag
+        guild_snippets[self.trigger] = ensure_snippet_defaults(existing_entry)
         save_snippets()
 
         action = "updated" if self.existed else "created"
@@ -921,7 +1228,8 @@ async def add_snippet(interaction: discord.Interaction, trigger: str, content: s
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
-    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": False}
+    entry = ensure_snippet_defaults({"content": content, "dynamic": False})
+    snippets.setdefault(gid, {})[trigger] = entry
     save_snippets()
     await interaction.response.send_message(f"✅ Static snippet `!{trigger}` added.", ephemeral=True)
 
@@ -932,7 +1240,8 @@ async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, co
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
-    snippets.setdefault(gid, {})[trigger] = {"content": content, "dynamic": True}
+    entry = ensure_snippet_defaults({"content": content, "dynamic": True})
+    snippets.setdefault(gid, {})[trigger] = entry
     save_snippets()
     await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` added.", ephemeral=True)
 
@@ -944,8 +1253,10 @@ async def edit_snippet(interaction: discord.Interaction, trigger: str, content: 
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
     if gid in snippets and trigger in snippets[gid]:
-        snippets[gid][trigger]["content"] = content
-        snippets[gid][trigger]["dynamic"] = False
+        entry = ensure_snippet_defaults(snippets[gid][trigger])
+        entry["content"] = content
+        entry["dynamic"] = False
+        snippets[gid][trigger] = entry
         save_snippets()
         return await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
@@ -958,8 +1269,10 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
     trigger = trigger.lstrip("!")
     gid = str(interaction.guild.id)
     if gid in snippets and trigger in snippets[gid]:
-        snippets[gid][trigger]["content"] = content
-        snippets[gid][trigger]["dynamic"] = bool(dynamic)
+        entry = ensure_snippet_defaults(snippets[gid][trigger])
+        entry["content"] = content
+        entry["dynamic"] = bool(dynamic)
+        snippets[gid][trigger] = entry
         save_snippets()
         return await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` updated.", ephemeral=True)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
@@ -1041,754 +1354,241 @@ async def list_snippets(interaction: discord.Interaction):
         embed.add_field(name=f"!{trig} {label}", value=preview or "-", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# =====================================================
-# Automatic reply helpers & handlers
-# =====================================================
-
-
-def _dedupe_ints(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    unique: list[int] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            unique.append(value)
-    return unique
-
-
-def parse_role_ids(raw: Optional[str]) -> list[int]:
-    if not raw:
-        return []
-
-    ids: list[int] = []
-    for match in re.finditer(r"<@&(\d+)>", raw):
-        ids.append(int(match.group(1)))
-
-    for token in raw.split():
-        if token.isdigit():
-            ids.append(int(token))
-
-    return _dedupe_ints(ids)
-
-
-def parse_channel_ids(
-    guild: Optional[discord.Guild],
-    primary_channel: Optional[discord.abc.GuildChannel],
-    raw: Optional[str],
-) -> list[int]:
-    ids: list[int] = []
-
-    if primary_channel is not None:
-        ids.append(primary_channel.id)
-
-    if raw:
-        for match in re.finditer(r"<#(\d+)>", raw):
-            ids.append(int(match.group(1)))
-
-        for token in re.split(r"[\s,]+", raw.strip()):
-            if not token:
-                continue
-            cleaned = token.strip()
-            if cleaned.isdigit():
-                ids.append(int(cleaned))
-                continue
-
-            if cleaned.startswith("<#") and cleaned.endswith(">"):
-                continue
-
-            if guild is not None:
-                lookup_name = cleaned.lstrip("#")
-                for channel in guild.channels:
-                    if getattr(channel, "name", None) == lookup_name:
-                        ids.append(channel.id)
-                        break
-
-    if guild is not None:
-        validated: list[int] = []
-        for channel_id in ids:
-            channel = guild.get_channel(channel_id)
-            if channel and hasattr(channel, "send"):
-                validated.append(channel_id)
-        ids = validated
-
-    return _dedupe_ints(ids)
-
-
-def get_role_exclude_pattern(guild_id: str, entry: dict) -> Optional[re.Pattern]:
-    pattern_text = entry.get("role_exclude_regex")
-    if not pattern_text:
-        return None
-
-    cache_key = f"{guild_id}:{entry.get('id')}"
-    cached = auto_reply_role_exclude_cache.get(cache_key)
-    if cached and cached.pattern == pattern_text:
-        return cached
-
-    try:
-        compiled = re.compile(pattern_text, re.IGNORECASE)
-    except re.error:
-        return None
-
-    auto_reply_role_exclude_cache[cache_key] = compiled
-    return compiled
-
-
-def _cooldown_bucket(scope: str, message: discord.Message) -> str:
-    if scope == "guild":
-        return "guild"
-    if scope == "channel":
-        return f"channel:{message.channel.id}"
-    return f"user:{message.author.id}"
-
-
-def is_auto_reply_on_cooldown(
-    guild_id: str,
-    entry: dict,
-    message: discord.Message,
-    now_ts: float,
-) -> bool:
-    entry_id = entry.get("id")
-    if not entry_id:
-        return False
-
-    scope = entry.get("cooldown_scope") or "user"
-    bucket_key = _cooldown_bucket(scope, message)
-    state = auto_reply_cooldowns.get(guild_id, {}).get(entry_id, {})
-    last_ts = state.get(bucket_key)
-    if last_ts is None:
-        return False
-
-    if entry.get("cooldown_once"):
-        return True
-
-    cooldown_raw = entry.get("cooldown_seconds")
-    try:
-        cooldown_seconds = float(cooldown_raw)
-    except (TypeError, ValueError):
-        cooldown_seconds = 0
-    if cooldown_seconds <= 0:
-        return False
-
-    return now_ts - last_ts < cooldown_seconds
-
-
-def mark_auto_reply_trigger(
-    guild_id: str,
-    entry: dict,
-    message: discord.Message,
-    now_ts: float,
-) -> None:
-    entry_id = entry.get("id")
-    if not entry_id:
-        return
-
-    scope = entry.get("cooldown_scope") or "user"
-    bucket_key = _cooldown_bucket(scope, message)
-    state = auto_reply_cooldowns.setdefault(guild_id, {}).setdefault(entry_id, {})
-
-    if entry.get("cooldown_once"):
-        state[bucket_key] = float("inf")
-        return
-
-    cooldown_raw = entry.get("cooldown_seconds")
-    try:
-        cooldown_seconds = float(cooldown_raw)
-    except (TypeError, ValueError):
-        cooldown_seconds = 0
-    if cooldown_seconds > 0:
-        state[bucket_key] = now_ts
-
-
-def remove_auto_reply_by_id(guild_id: str, entry_id: str) -> bool:
-    entries = auto_replies.get(guild_id)
-    if not entries:
-        return False
-
-    updated: list[dict] = []
-    removed = False
-    for entry in entries:
-        if entry.get("id") == entry_id:
-            removed = True
-            continue
-        updated.append(entry)
-
-    if not removed:
-        return False
-
-    if updated:
-        auto_replies[guild_id] = updated
-    else:
-        auto_replies.pop(guild_id, None)
-
-    save_auto_replies()
-
-    cache_key = f"{guild_id}:{entry_id}"
-    auto_reply_role_exclude_cache.pop(cache_key, None)
-    guild_cooldowns = auto_reply_cooldowns.get(guild_id)
-    if guild_cooldowns and entry_id in guild_cooldowns:
-        guild_cooldowns.pop(entry_id, None)
-        if not guild_cooldowns:
-            auto_reply_cooldowns.pop(guild_id, None)
-
-    return True
-
-
-def describe_auto_reply(guild: Optional[discord.Guild], entry: dict) -> list[str]:
-    lines: list[str] = [f"ID: `{entry.get('id', '?')}`"]
-
-    snippet_name = entry.get("snippet_trigger")
-    response_text = entry.get("response")
-    if snippet_name:
-        lines.append(f"Sends snippet: `!{snippet_name}`")
-    if response_text:
-        preview = response_text if len(response_text) <= 80 else response_text[:77] + "..."
-        lines.append(f"Response preview: {preview}")
-
-    role_ids = entry.get("allowed_role_ids") or []
-    if role_ids:
-        mentions: list[str] = []
-        if guild is not None:
-            for rid in role_ids:
-                role = guild.get_role(int(rid))
-                mentions.append(role.mention if role else f"<@&{rid}>")
-        else:
-            mentions = [f"<@&{rid}>" for rid in role_ids]
-        lines.append(f"Required roles: {' '.join(mentions)}")
-
-    exclude_regex = entry.get("role_exclude_regex")
-    if exclude_regex:
-        lines.append(f"Excluded roles (regex): `{exclude_regex}`")
-
-    channel_ids = entry.get("channel_ids") or []
-    if channel_ids:
-        channel_mentions: list[str] = []
-        if guild is not None:
-            for cid in channel_ids:
-                channel = guild.get_channel(int(cid))
-                channel_mentions.append(channel.mention if channel else f"<#{cid}>")
-        else:
-            channel_mentions = [f"<#{cid}>" for cid in channel_ids]
-        lines.append(f"Channels: {' '.join(channel_mentions)}")
-
-    scope = entry.get("cooldown_scope") or "user"
-    scope_labels = {
-        "user": "per member",
-        "channel": "per channel",
-        "guild": "server-wide",
-    }
-    scope_label = scope_labels.get(scope, scope)
-
-    if entry.get("cooldown_once"):
-        lines.append(f"Triggers once ({scope_label})")
-    else:
-        cooldown_raw = entry.get("cooldown_seconds")
-        try:
-            cooldown_seconds = float(cooldown_raw)
-        except (TypeError, ValueError):
-            cooldown_seconds = 0
-        if cooldown_seconds > 0:
-            display_value = int(cooldown_seconds) if cooldown_seconds.is_integer() else cooldown_seconds
-            lines.append(f"Cooldown: {display_value}s ({scope_label})")
-
-    return lines
-
-
-def build_auto_reply_detail_embed(guild: discord.Guild, entry: dict) -> discord.Embed:
-    keyword = entry.get("keyword", "?")
-    embed = discord.Embed(
-        title=f"Automatic reply: {keyword}", color=discord.Color.blurple()
-    )
-    embed.description = "\n".join(describe_auto_reply(guild, entry))
-
-    response_text = entry.get("response")
-    if response_text:
-        trimmed = response_text if len(response_text) <= 1024 else response_text[:1021] + "..."
-        embed.add_field(name="Response", value=trimmed, inline=False)
-
-    snippet_name = entry.get("snippet_trigger")
-    if snippet_name:
-        embed.add_field(name="Snippet", value=f"`!{snippet_name}`", inline=False)
-
-    return embed
-
-
-class AutoReplySelect(discord.ui.Select):
-    EMPTY_VALUE = "__none__"
-
-    def __init__(self, config_view: "AutoReplyConfigView"):
-        self.config_view = config_view
-        options = self._build_options()
-        disabled = False
-        if not options:
-            options = [discord.SelectOption(label="No automatic replies available", value=self.EMPTY_VALUE)]
-            disabled = True
-        super().__init__(
-            placeholder="Select an automatic reply to inspect…",
-            min_values=1,
-            max_values=1,
-            options=options,
-            disabled=disabled,
-        )
-
-    def _build_options(self) -> list[discord.SelectOption]:
-        options: list[discord.SelectOption] = []
-        entries = auto_replies.get(self.config_view.guild_id, [])
-        for entry in entries[:25]:
-            entry_id = str(entry.get("id") or entry.get("keyword") or len(options))
-            label = (entry.get("keyword") or "(no keyword)")[:100]
-            description_source = entry.get("snippet_trigger") or (entry.get("response") or "")
-            description = description_source.replace("\n", " ") if description_source else ""
-            if len(description) > 100:
-                description = description[:97] + "..."
-            options.append(
-                discord.SelectOption(
-                    label=label or entry_id,
-                    value=entry_id,
-                    description=description or None,
-                )
-            )
-        return options
-
-    def refresh_options(self) -> None:
-        options = self._build_options()
-        if not options:
-            self.options = [discord.SelectOption(label="No automatic replies available", value=self.EMPTY_VALUE)]
-            self.disabled = True
-        else:
-            self.options = options
-            self.disabled = False
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        value = self.values[0]
-        if value == self.EMPTY_VALUE:
-            await interaction.response.defer()
-            return
-
-        self.config_view.status = None
-        self.config_view.selected_id = value
-        entry = self.config_view.get_entry(value)
-        if not entry:
-            self.config_view.status = "⚠️ The selected automatic reply no longer exists."
-            self.config_view.selected_id = None
-            self.config_view.update_components()
-            await interaction.response.edit_message(
-                embed=self.config_view.build_overview_embed(),
-                view=self.config_view,
-            )
-            return
-
-        self.config_view.delete_button.disabled = False
-        embed = build_auto_reply_detail_embed(self.config_view.guild, entry)
-        await interaction.response.edit_message(embed=embed, view=self.config_view)
-
-
-class AutoReplyDeleteButton(discord.ui.Button):
-    def __init__(self, config_view: "AutoReplyConfigView"):
-        super().__init__(label="Delete selected", style=discord.ButtonStyle.danger, disabled=True)
-        self.config_view = config_view
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        entry_id = self.config_view.selected_id
-        if not entry_id:
-            await interaction.response.send_message("Select an automatic reply first.", ephemeral=True)
-            return
-
-        entry = self.config_view.get_entry(entry_id)
-        if not entry:
-            self.config_view.status = "⚠️ That automatic reply could not be found."
-            self.config_view.selected_id = None
-            self.config_view.update_components()
-            await interaction.response.edit_message(
-                embed=self.config_view.build_overview_embed(),
-                view=self.config_view,
-            )
-            return
-
-        keyword = entry.get("keyword", entry_id)
-        entry_key = str(entry.get("id") or entry_id)
-        if not remove_auto_reply_by_id(self.config_view.guild_id, entry_key):
-            self.config_view.status = "❌ Failed to delete the selected automatic reply."
-        else:
-            self.config_view.status = f"✅ Deleted automatic reply `{keyword}`."
-            self.config_view.selected_id = None
-
-        self.config_view.update_components()
-        await interaction.response.edit_message(
-            embed=self.config_view.build_overview_embed(),
-            view=self.config_view,
-        )
-
-
-class AutoReplyConfigView(discord.ui.View):
-    def __init__(self, guild: discord.Guild, requester_id: int):
-        super().__init__(timeout=180)
-        self.guild = guild
-        self.guild_id = str(guild.id)
-        self.requester_id = requester_id
-        self.selected_id: Optional[str] = None
-        self.status: Optional[str] = None
-        self.message: Optional[discord.Message] = None
-
-        self.select = AutoReplySelect(self)
-        self.add_item(self.select)
-
-        self.delete_button = AutoReplyDeleteButton(self)
-        self.add_item(self.delete_button)
-
-        self.update_components()
-
-    def get_entry(self, entry_id: str) -> Optional[dict]:
-        for entry in auto_replies.get(self.guild_id, []):
-            entry_identifier = entry.get("id")
-            if entry_identifier is not None and str(entry_identifier) == entry_id:
-                return entry
-            keyword = entry.get("keyword")
-            if keyword and str(keyword) == entry_id:
-                return entry
-        return None
-
-    def update_components(self) -> None:
-        self.select.refresh_options()
-        if self.selected_id and not self.get_entry(self.selected_id):
-            self.selected_id = None
-
-        has_entries = bool(auto_replies.get(self.guild_id))
-        self.delete_button.disabled = not (self.selected_id and has_entries)
-
-    def build_overview_embed(self) -> discord.Embed:
-        entries = auto_replies.get(self.guild_id, [])
-        if entries:
-            base_description = "Select an automatic reply from the dropdown to inspect or delete it."
-        else:
-            base_description = "No automatic replies configured yet."
-
-        if self.status:
-            description = f"{self.status}\n\n{base_description}"
-        else:
-            description = base_description
-
-        embed = discord.Embed(
-            title="Automatic reply configuration",
-            description=description,
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Configured replies", value=str(len(entries)), inline=False)
-        if len(entries) > 25:
-            embed.set_footer(text="Only the first 25 replies are shown in the selector.")
-        return embed
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message(
-                "❌ Only the command invoker can use this menu.", ephemeral=True
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
-
-
-async def maybe_handle_auto_reply(message: discord.Message) -> bool:
-    if message.author.bot or not message.guild or message.content.startswith("!"):
-        return False
-
-    gid = str(message.guild.id)
-    guild_replies = auto_replies.get(gid, [])
-    if not guild_replies:
-        return False
-
-    content_lower = message.content.lower()
-    author_roles = getattr(message.author, "roles", [])
-    author_role_ids = {role.id for role in author_roles if isinstance(role, discord.Role)}
-    now_ts = time.time()
-
-    triggered = False
-    for entry in guild_replies:
-        keyword = entry.get("keyword", "")
-        if not keyword:
-            continue
-
-        if keyword.lower() not in content_lower:
-            continue
-
-        required_role_ids: set[int] = set()
-        for rid in entry.get("allowed_role_ids") or []:
-            try:
-                required_role_ids.add(int(rid))
-            except (TypeError, ValueError):
-                continue
-        if required_role_ids and not author_role_ids.intersection(required_role_ids):
-            continue
-
-        channel_limit_ids: set[int] = set()
-        for cid in entry.get("channel_ids") or []:
-            try:
-                channel_limit_ids.add(int(cid))
-            except (TypeError, ValueError):
-                continue
-        if channel_limit_ids and message.channel.id not in channel_limit_ids:
-            continue
-
-        exclude_pattern = get_role_exclude_pattern(gid, entry)
-        if exclude_pattern and any(
-            isinstance(role, discord.Role)
-            and getattr(role, "name", None)
-            and exclude_pattern.search(role.name)
-            for role in author_roles
-        ):
-            continue
-
-        if is_auto_reply_on_cooldown(gid, entry, message, now_ts):
-            continue
-
-        snippet_trigger = entry.get("snippet_trigger")
-        response_text = entry.get("response")
-
-        try:
-            sent_message = False
-            if snippet_trigger:
-                snippet_content = render_snippet_content(gid, snippet_trigger.lstrip("!"), [])
-                if snippet_content:
-                    await message.channel.send(snippet_content)
-                    triggered = True
-                    sent_message = True
-                    mark_auto_reply_trigger(gid, entry, message, now_ts)
-                    continue
-                if not response_text:
-                    continue
-
-            if response_text:
-                await message.channel.send(response_text)
-                triggered = True
-                sent_message = True
-
-        except discord.Forbidden:
-            pass
-        else:
-            if sent_message:
-                mark_auto_reply_trigger(gid, entry, message, now_ts)
-
-    return triggered
-
 
 # =====================================================
 # Auto Reply Commands
 # =====================================================
 
 
-@bot.tree.command(name="addautoreply", description="Add an automatic reply triggered by a keyword")
+@bot.tree.command(name="setautoreply", description="Create or update an auto reply triggered by regex")
 @app_commands.describe(
-    keyword="Substring that should trigger the reply (case-insensitive)",
-    response="Message to send back (ignored if snippet_trigger is provided)",
-    snippet_trigger="Existing snippet trigger to send instead of plain text",
-    allowed_roles="Role mentions or IDs that the author must have (space separated)",
-    channel="Restrict the reply to a specific channel",
-    additional_channels="Extra channel mentions, names, or IDs (space separated)",
-    role_exclude_regex="Regex to skip members with matching role names (case-insensitive)",
-    cooldown_seconds="Cooldown in seconds before this can trigger again (0 to disable)",
-    cooldown_once="If true, only trigger once for the chosen scope",
+    name="Name of the auto reply",
+    pattern="Regex pattern to match messages",
+    response="Message to send when the pattern matches",
+    dynamic="Treat capture groups as {1}, {2}, ... in the response",
 )
-@app_commands.choices(
-    cooldown_scope=[
-        app_commands.Choice(name="Per member", value="user"),
-        app_commands.Choice(name="Per channel", value="channel"),
-        app_commands.Choice(name="Server-wide", value="guild"),
-    ]
-)
-async def add_auto_reply(
+async def set_autoreply(
     interaction: discord.Interaction,
-    keyword: str,
-    response: Optional[str] = None,
-    snippet_trigger: Optional[str] = None,
-    allowed_roles: Optional[str] = None,
-    channel: Optional[discord.TextChannel] = None,
-    additional_channels: Optional[str] = None,
-    role_exclude_regex: Optional[str] = None,
-    cooldown_seconds: Optional[int] = None,
-    cooldown_scope: Optional[app_commands.Choice[str]] = None,
-    cooldown_once: bool = False,
+    name: str,
+    pattern: str,
+    response: str,
+    dynamic: Optional[bool] = None,
 ):
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
-    if interaction.guild is None:
-        return await interaction.response.send_message(
-            "❌ This command can only be used inside a server.", ephemeral=True
-        )
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Auto reply name cannot be empty.", ephemeral=True)
 
-    keyword = keyword.strip()
-    if not keyword:
-        return await interaction.response.send_message("❌ Keyword cannot be empty.", ephemeral=True)
+    pattern = pattern.strip()
+    if not pattern:
+        return await interaction.response.send_message("❌ Regex pattern cannot be empty.", ephemeral=True)
 
-    if not response and not snippet_trigger:
-        return await interaction.response.send_message(
-            "❌ Provide a response message or a snippet trigger.", ephemeral=True
-        )
+    if not response:
+        return await interaction.response.send_message("❌ Response cannot be empty.", ephemeral=True)
 
-    if response:
-        response = response.strip()
-
-    if cooldown_seconds is not None and cooldown_seconds < 0:
-        return await interaction.response.send_message(
-            "❌ Cooldown seconds must be zero or greater.", ephemeral=True
-        )
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
 
     gid = str(interaction.guild.id)
-    snippet_name = snippet_trigger.lstrip("!") if snippet_trigger else None
-    if snippet_name:
-        if gid not in snippets or snippet_name not in snippets[gid]:
-            return await interaction.response.send_message(
-                f"❌ Snippet `!{snippet_name}` not found.", ephemeral=True
-            )
+    guild_replies = auto_replies.setdefault(gid, {})
+    existed = name in guild_replies
+    entry = ensure_autoreply_defaults(guild_replies.get(name, {}))
 
-    if role_exclude_regex:
-        try:
-            re.compile(role_exclude_regex)
-        except re.error as exc:
-            return await interaction.response.send_message(
-                f"❌ Invalid role exclude regex: {exc}.", ephemeral=True
-            )
+    entry["pattern"] = pattern
+    entry["response"] = response
+    entry["dynamic"] = entry.get("dynamic", False) if dynamic is None else bool(dynamic)
 
-    entry_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
-    role_ids = parse_role_ids(allowed_roles)
-    channel_ids = parse_channel_ids(interaction.guild, channel, additional_channels)
-
-    scope_value = (cooldown_scope.value if cooldown_scope else None) or "user"
-    cooldown_seconds = int(cooldown_seconds) if cooldown_seconds is not None else None
-
-    entry = {
-        "id": entry_id,
-        "keyword": keyword,
-        "response": response or None,
-        "snippet_trigger": snippet_name,
-        "allowed_role_ids": role_ids,
-    }
-
-    if channel_ids:
-        entry["channel_ids"] = channel_ids
-    if role_exclude_regex:
-        entry["role_exclude_regex"] = role_exclude_regex
-    if cooldown_once:
-        entry["cooldown_once"] = True
-    if cooldown_seconds is not None and cooldown_seconds > 0:
-        entry["cooldown_seconds"] = cooldown_seconds
-    if cooldown_scope or cooldown_once or (cooldown_seconds and cooldown_seconds > 0):
-        entry["cooldown_scope"] = scope_value
-
-    auto_replies.setdefault(gid, []).append(entry)
+    guild_replies[name] = ensure_autoreply_defaults(entry)
     save_auto_replies()
-    get_role_exclude_pattern(gid, entry)
 
-    summary_parts = [f"Keyword `{keyword}`"]
-    if snippet_name:
-        summary_parts.append(f"will send snippet `!{snippet_name}`")
-    elif response:
-        summary_parts.append("will send your custom response")
-
-    if role_ids:
-        mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
-        summary_parts.append(f"(requires roles: {mentions})")
-
-    if channel_ids:
-        channel_mentions = []
-        for cid in channel_ids:
-            channel_obj = interaction.guild.get_channel(cid)
-            channel_mentions.append(channel_obj.mention if channel_obj else f"<#{cid}>")
-        summary_parts.append(f"(channels: {' '.join(channel_mentions)})")
-
-    if role_exclude_regex:
-        summary_parts.append(f"(excludes roles matching `{role_exclude_regex}`)")
-
-    if cooldown_once:
-        scope_label = {"user": "per member", "channel": "per channel", "guild": "server-wide"}.get(
-            scope_value, scope_value
-        )
-        summary_parts.append(f"(triggers once {scope_label})")
-    elif cooldown_seconds:
-        scope_label = {"user": "per member", "channel": "per channel", "guild": "server-wide"}.get(
-            scope_value, scope_value
-        )
-        summary_parts.append(f"(cooldown {cooldown_seconds}s {scope_label})")
-
-    confirmation = " ".join(summary_parts)
-    await interaction.response.send_message(f"✅ {confirmation}.", ephemeral=True)
+    action = "updated" if existed else "created"
+    await interaction.response.send_message(f"✅ Auto reply `{name}` {action}.", ephemeral=True)
 
 
-@bot.tree.command(name="removeautoreply", description="Remove an automatic reply by ID or keyword")
-@app_commands.describe(identifier="ID from /listautoreplies or the keyword itself")
-async def remove_auto_reply(interaction: discord.Interaction, identifier: str):
+@bot.tree.command(name="removeautoreply", description="Delete an auto reply")
+@app_commands.describe(name="Name of the auto reply to remove")
+async def remove_autoreply(interaction: discord.Interaction, name: str):
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
-    gid = str(interaction.guild.id)
-    entries = auto_replies.get(gid, [])
-    if not entries:
-        return await interaction.response.send_message("No automatic replies configured.", ephemeral=True)
-
-    identifier_lower = identifier.lower()
-    target_entry = None
-    for entry in entries:
-        if entry.get("id") == identifier or entry.get("keyword", "").lower() == identifier_lower:
-            target_entry = entry
-            break
-
-    if not target_entry:
-        return await interaction.response.send_message("❌ Automatic reply not found.", ephemeral=True)
-
-    entry_id = target_entry.get("id")
-    if not entry_id or not remove_auto_reply_by_id(gid, entry_id):
-        return await interaction.response.send_message("❌ Failed to remove automatic reply.", ephemeral=True)
-    await interaction.response.send_message("✅ Automatic reply removed.", ephemeral=True)
-
-
-@bot.tree.command(name="listautoreplies", description="List automatic replies configured for this server")
-async def list_auto_replies(interaction: discord.Interaction):
-    if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Auto reply name cannot be empty.", ephemeral=True)
 
     gid = str(interaction.guild.id)
-    entries = auto_replies.get(gid, [])
-    if not entries:
-        return await interaction.response.send_message("No automatic replies configured.", ephemeral=True)
+    guild_replies = auto_replies.get(gid, {})
+    if name in guild_replies:
+        del guild_replies[name]
+        save_auto_replies()
+        return await interaction.response.send_message(f"✅ Auto reply `{name}` removed.", ephemeral=True)
 
-    embed = discord.Embed(title="🤖 Automatic Replies", color=discord.Color.blurple())
-    for entry in entries:
-        keyword = entry.get("keyword", "-")
-        lines = describe_auto_reply(interaction.guild, entry)
-        embed.add_field(name=f"Keyword: `{keyword}`", value="\n".join(lines), inline=False)
+    await interaction.response.send_message("❌ Auto reply not found.", ephemeral=True)
+
+
+@bot.tree.command(name="listautoreplies", description="List auto replies for this server")
+async def list_autoreplies(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    guild_replies = auto_replies.get(gid)
+
+    if not guild_replies:
+        return await interaction.response.send_message("No auto replies configured.", ephemeral=True)
+
+    embed = discord.Embed(title="🤖 Auto Replies", color=discord.Color.blurple())
+    for name, entry in guild_replies.items():
+        pattern = entry.get("pattern") or "(no pattern)"
+        dynamic_flag = "Dynamic" if entry.get("dynamic") else "Static"
+        cooldown_seconds = int(entry.get("cooldown_seconds") or 0)
+        scope = entry.get("cooldown_scope", "guild")
+        summary = [f"Pattern: `{pattern}`", dynamic_flag]
+        if cooldown_seconds:
+            summary.append(f"Cooldown: {format_duration(cooldown_seconds)} ({scope})")
+        include_roles = entry.get("include_roles") or []
+        exclude_roles = entry.get("exclude_roles") or []
+        include_channels = entry.get("include_channels") or []
+        exclude_channels = entry.get("exclude_channels") or []
+        if include_roles:
+            summary.append(f"Requires roles ({len(include_roles)})")
+        if exclude_roles:
+            summary.append(f"Blocked roles ({len(exclude_roles)})")
+        if include_channels:
+            summary.append(f"Allowed channels only ({len(include_channels)})")
+        if exclude_channels:
+            summary.append(f"Blocked channels ({len(exclude_channels)})")
+        embed.add_field(
+            name=name,
+            value=" • ".join(summary)[:900] or "-",
+            inline=False,
+        )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="autoreplyconfig", description="Open the automatic reply configuration menu")
-async def auto_reply_config_menu(interaction: discord.Interaction):
+@app_commands.describe(
+    name="Auto reply name",
+    include_roles="Roles required (mentions/IDs, comma or space separated)",
+    exclude_roles="Roles blocked from triggering",
+    include_channels="Channels allowed (mentions/IDs)",
+    exclude_channels="Channels to ignore (mentions/IDs)",
+    cooldown="Cooldown like 30s, 5m, 1h (0/none to disable)",
+)
+@app_commands.choices(
+    cooldown_scope=[
+        app_commands.Choice(name="Per Guild", value="guild"),
+        app_commands.Choice(name="Per Channel", value="channel"),
+        app_commands.Choice(name="Per User", value="user"),
+        app_commands.Choice(name="Per Member", value="member"),
+        app_commands.Choice(name="Per Channel + User", value="channel_user"),
+        app_commands.Choice(name="Per Thread", value="thread"),
+        app_commands.Choice(name="Per Primary Role", value="role"),
+    ]
+)
+@bot.tree.command(name="autoreplyoptions", description="Configure filters and cooldowns for an auto reply")
+async def autoreply_options(
+    interaction: discord.Interaction,
+    name: str,
+    include_roles: Optional[str] = None,
+    exclude_roles: Optional[str] = None,
+    include_channels: Optional[str] = None,
+    exclude_channels: Optional[str] = None,
+    cooldown: Optional[str] = None,
+    cooldown_scope: Optional[app_commands.Choice[str]] = None,
+):
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
-    if interaction.guild is None:
-        return await interaction.response.send_message(
-            "❌ This command can only be used inside a server.", ephemeral=True
-        )
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Auto reply name cannot be empty.", ephemeral=True)
 
-    view = AutoReplyConfigView(interaction.guild, interaction.user.id)
-    embed = view.build_overview_embed()
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    try:
-        view.message = await interaction.original_response()
-    except discord.HTTPException:
-        view.message = None
+    gid = str(interaction.guild.id)
+    guild_replies = auto_replies.setdefault(gid, {})
+    if name not in guild_replies:
+        return await interaction.response.send_message("❌ Auto reply not found.", ephemeral=True)
 
+    entry = ensure_autoreply_defaults(guild_replies[name])
 
-# =====================================================
-# on_message handler (pins → then snippets with placeholders)
-# =====================================================
+    if include_roles is not None:
+        if include_roles.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["include_roles"] = []
+        else:
+            parsed, invalid = parse_role_input(interaction.guild, include_roles)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown roles: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["include_roles"] = sorted(set(parsed), key=int)
+
+    if exclude_roles is not None:
+        if exclude_roles.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["exclude_roles"] = []
+        else:
+            parsed, invalid = parse_role_input(interaction.guild, exclude_roles)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown roles: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["exclude_roles"] = sorted(set(parsed), key=int)
+
+    if include_channels is not None:
+        if include_channels.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["include_channels"] = []
+        else:
+            parsed, invalid = parse_channel_input(interaction.guild, include_channels)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown channels: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["include_channels"] = sorted(set(parsed), key=int)
+
+    if exclude_channels is not None:
+        if exclude_channels.strip().lower() in {"", "none", "clear", "reset", "off"}:
+            entry["exclude_channels"] = []
+        else:
+            parsed, invalid = parse_channel_input(interaction.guild, exclude_channels)
+            if invalid:
+                return await interaction.response.send_message(
+                    f"❌ Unknown channels: {' '.join(invalid)}", ephemeral=True
+                )
+            entry["exclude_channels"] = sorted(set(parsed), key=int)
+
+    if cooldown is not None:
+        seconds, error = parse_duration_string(cooldown)
+        if error:
+            return await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+        if seconds is not None:
+            entry["cooldown_seconds"] = int(seconds)
+
+    if cooldown_scope is not None:
+        entry["cooldown_scope"] = cooldown_scope.value
+
+    guild_replies[name] = ensure_autoreply_defaults(entry)
+    save_auto_replies()
+
+    include_mentions = [interaction.guild.get_role(int(rid)).mention for rid in entry.get("include_roles", []) if interaction.guild.get_role(int(rid))]
+    exclude_mentions = [interaction.guild.get_role(int(rid)).mention for rid in entry.get("exclude_roles", []) if interaction.guild.get_role(int(rid))]
+    allowed_channels = [interaction.guild.get_channel(int(cid)).mention for cid in entry.get("include_channels", []) if interaction.guild.get_channel(int(cid))]
+    blocked_channels = [interaction.guild.get_channel(int(cid)).mention for cid in entry.get("exclude_channels", []) if interaction.guild.get_channel(int(cid))]
+
+    cooldown_seconds = int(entry.get("cooldown_seconds") or 0)
+    scope_label = entry.get("cooldown_scope", "guild")
+
+    summary_lines = [
+        f"Requires roles: {', '.join(include_mentions)}" if include_mentions else "Requires roles: none",
+        f"Blocked roles: {', '.join(exclude_mentions)}" if exclude_mentions else "Blocked roles: none",
+        f"Allowed channels: {', '.join(allowed_channels)}" if allowed_channels else "Allowed channels: all",
+        f"Blocked channels: {', '.join(blocked_channels)}" if blocked_channels else "Blocked channels: none",
+        f"Cooldown: {format_duration(cooldown_seconds)} ({scope_label})" if cooldown_seconds else "Cooldown: disabled",
+    ]
+
+    await interaction.response.send_message(
+        "✅ Auto reply updated:\n" + "\n".join(summary_lines),
+        ephemeral=True,
+    )
+
 
 @bot.event
 async def on_message(message):
@@ -1798,46 +1598,43 @@ async def on_message(message):
     # Pinned message reposting
     await handle_pin_repost(message)
 
-    # Automatic replies based on message content
-    await maybe_handle_auto_reply(message)
-
-    # Snippet handling (messages starting with "!")
-    if message.content.startswith("!"):
-        if not message.guild:
-            return
-
+    if message.guild:
         gid = str(message.guild.id)
-        parts = message.content.split()
-        if parts:
-            trigger = parts[0][1:]
+        guild_snippets = snippets.get(gid, {})
 
-            if gid in snippets and trigger in snippets[gid]:
-                args = parts[1:]
-                content = render_snippet_content(gid, trigger, args)
-                if content is None:
-                    return
-
-                # Delete the original trigger message to keep channels clean
-                try:
-                    await message.delete()
-                except discord.Forbidden:
-                    pass
-
-                # If the snippet was used as a reply, mention the original author first.
-                if message.reference and message.reference.message_id:
-                    try:
-                        replied = await message.channel.fetch_message(message.reference.message_id)
-                        content = f"{replied.author.mention} {content}"
-                    except discord.NotFound:
-                        pass
-
-                try:
-                    await message.channel.send(content)
-                except discord.Forbidden:
-                    await message.channel.send(
-                        f"⚠️ I don't have permission to send messages! Snippet would be: {content}"
+        if message.content.startswith("!"):
+            parts = message.content.split()
+            if parts:
+                trigger = parts[0][1:]
+                entry = guild_snippets.get(trigger)
+                if entry:
+                    args = parts[1:] if entry.get("dynamic") else []
+                    handled = await dispatch_snippet(
+                        message,
+                        trigger,
+                        entry,
+                        args,
+                        delete_trigger=True,
                     )
+                    if handled:
+                        return
 
+        guild_replies = auto_replies.get(gid, {})
+        for name, entry in guild_replies.items():
+            pattern = entry.get("pattern")
+            if not pattern:
+                continue
+
+            try:
+                match = re.search(pattern, message.content)
+            except re.error:
+                continue
+
+            if not match:
+                continue
+
+            handled = await dispatch_auto_reply(message, name, entry, match)
+            if handled:
                 return
 
     # Keep slash commands and prefixed commands working
