@@ -434,9 +434,9 @@ def parse_duration_string(raw: Optional[str]) -> Tuple[Optional[int], Optional[s
         return seconds, None
 
     total = 0
-    matches = list(re.finditer(r"(\d+)([smhd])", text))
+    matches = list(re.finditer(r"(\d+)([smhdw])", text))
     if not matches:
-        return None, "Use formats like 30s, 5m, 2h, or 1d (combinable)."
+        return None, "Use formats like 30s, 5m, 2h, 1d, or 1w (combinable)."
 
     for match in matches:
         amount = int(match.group(1))
@@ -446,6 +446,7 @@ def parse_duration_string(raw: Optional[str]) -> Tuple[Optional[int], Optional[s
             'm': 60,
             'h': 3600,
             'd': 86400,
+            'w': 604800,
         }[unit]
         total += amount * multiplier
 
@@ -541,6 +542,9 @@ def ensure_autoreply_defaults(entry: dict) -> dict:
     entry.setdefault("pattern", "")
     entry.setdefault("response", "")
     entry.setdefault("dynamic", False)
+    entry.setdefault("match_type", "regex")
+    entry.setdefault("case_sensitive", False)
+    entry.setdefault("snippet", "")
     entry.setdefault("include_roles", [])
     entry.setdefault("exclude_roles", [])
     entry.setdefault("include_channels", [])
@@ -615,6 +619,18 @@ def load_auto_replies():
                 raw[guild_id][name] = ensure_autoreply_defaults(data)
                 if not raw[guild_id][name].get("pattern"):
                     raw[guild_id][name]["pattern"] = name
+                match_type = str(raw[guild_id][name].get("match_type") or "regex").lower()
+                if match_type not in {"regex", "contains"}:
+                    raw[guild_id][name]["match_type"] = "regex"
+                    migrated = True
+                if raw[guild_id][name].get("snippet") is None:
+                    raw[guild_id][name]["snippet"] = ""
+                    migrated = True
+                if not isinstance(raw[guild_id][name].get("case_sensitive"), bool):
+                    raw[guild_id][name]["case_sensitive"] = bool(
+                        raw[guild_id][name].get("case_sensitive")
+                    )
+                    migrated = True
                 if raw[guild_id][name] != before:
                     migrated = True
 
@@ -672,6 +688,18 @@ def determine_autoreply_cooldown_bucket(entry: dict, message: discord.Message) -
         bucket = f"channel:{message.channel.id}"
     elif scope == "channel_user":
         bucket = f"channel_user:{message.channel.id}:{message.author.id}"
+    elif scope == "category":
+        category_id = getattr(message.channel, "category_id", None)
+        if category_id:
+            bucket = f"category:{message.guild.id}:{category_id}"
+        else:
+            bucket = f"guild:{message.guild.id}"
+    elif scope == "category_user":
+        category_id = getattr(message.channel, "category_id", None)
+        if category_id:
+            bucket = f"category_user:{message.guild.id}:{category_id}:{message.author.id}"
+        else:
+            bucket = f"channel_user:{message.channel.id}:{message.author.id}"
     elif scope == "thread":
         thread_id = getattr(message.channel, "id", None)
         bucket = f"thread:{thread_id}" if thread_id else f"channel:{message.channel.id}"
@@ -707,14 +735,15 @@ def mark_autoreply_cooldown(guild_id: str, name: str, bucket: Optional[str]):
 async def render_auto_reply_content(
     message: discord.Message,
     entry: dict,
-    match: re.Match,
+    match: Optional[re.Match],
 ) -> str:
     content = entry.get("response", "")
 
     if entry.get("dynamic"):
-        groups = match.groups()
+        groups = match.groups() if match else ()
         for i, value in enumerate(groups, start=1):
-            content = content.replace(f"{{{i}}}", value)
+            replacement = value if value is not None else ""
+            content = content.replace(f"{{{i}}}", replacement)
         content = re.sub(r"\{\d+\}", "", content)
 
     if "{ping}" in content:
@@ -727,7 +756,7 @@ async def dispatch_auto_reply(
     message: discord.Message,
     name: str,
     entry: dict,
-    match: re.Match,
+    match: Optional[re.Match],
 ) -> bool:
     if not message.guild:
         return False
@@ -739,6 +768,25 @@ async def dispatch_auto_reply(
     bucket, seconds = determine_autoreply_cooldown_bucket(entry, message)
     if autoreply_on_cooldown(gid, name, bucket, seconds):
         return False
+
+    snippet_trigger = str(entry.get("snippet") or "").strip()
+    if snippet_trigger:
+        guild_snippets = snippets.get(gid, {})
+        snippet_entry = guild_snippets.get(snippet_trigger)
+        if snippet_entry:
+            args: List[str] = []
+            if entry.get("dynamic") and match:
+                args = [(group if group is not None else "") for group in match.groups()]
+            handled = await dispatch_snippet(
+                message,
+                snippet_trigger,
+                snippet_entry,
+                args,
+                delete_trigger=False,
+            )
+            if handled:
+                mark_autoreply_cooldown(gid, name, bucket)
+            return handled
 
     content = await render_auto_reply_content(message, entry, match)
     if not content:
@@ -1414,19 +1462,30 @@ autoreply_group = app_commands.Group(
 )
 
 
-@autoreply_group.command(name="set", description="Create or update an auto reply triggered by regex")
+@autoreply_group.command(name="set", description="Create or update an auto reply")
 @app_commands.describe(
     name="Name of the auto reply",
-    pattern="Regex pattern to match messages",
+    pattern="Text to match (regex or substring)",
     response="Message to send when the pattern matches",
     dynamic="Treat capture groups as {1}, {2}, ... in the response",
+    snippet="Name of a snippet to send instead of a text response",
+    case_sensitive="For contains mode, require matching case",
+)
+@app_commands.choices(
+    match_type=[
+        app_commands.Choice(name="Regex", value="regex"),
+        app_commands.Choice(name="Contains", value="contains"),
+    ]
 )
 async def set_autoreply(
     interaction: discord.Interaction,
     name: str,
     pattern: str,
-    response: str,
+    response: Optional[str] = None,
     dynamic: Optional[bool] = None,
+    match_type: Optional[app_commands.Choice[str]] = None,
+    snippet: Optional[str] = None,
+    case_sensitive: Optional[bool] = None,
 ):
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
@@ -1437,24 +1496,62 @@ async def set_autoreply(
 
     pattern = pattern.strip()
     if not pattern:
-        return await interaction.response.send_message("❌ Regex pattern cannot be empty.", ephemeral=True)
-
-    if not response:
-        return await interaction.response.send_message("❌ Response cannot be empty.", ephemeral=True)
-
-    try:
-        re.compile(pattern)
-    except re.error as exc:
-        return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
+        return await interaction.response.send_message("❌ Pattern cannot be empty.", ephemeral=True)
 
     gid = str(interaction.guild.id)
     guild_replies = auto_replies.setdefault(gid, {})
     existed = name in guild_replies
     entry = ensure_autoreply_defaults(guild_replies.get(name, {}))
 
+    selected_match_type = match_type.value if match_type else str(entry.get("match_type") or "regex")
+    if selected_match_type == "regex":
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
+    elif selected_match_type != "contains":
+        selected_match_type = "regex"
+
+    snippet_to_assign = None
+    if snippet is not None:
+        snippet_text = snippet.strip()
+        if not snippet_text or snippet_text.lower() in {"none", "clear", "reset", "off"}:
+            snippet_to_assign = ""
+        else:
+            snippet_name = snippet_text.lstrip("!")
+            guild_snippets = snippets.get(gid, {})
+            if snippet_name not in guild_snippets:
+                return await interaction.response.send_message(
+                    "❌ Snippet not found in this server.", ephemeral=True
+                )
+            snippet_to_assign = snippet_name
+
+    if response is None and not existed and not snippet_to_assign:
+        return await interaction.response.send_message(
+            "❌ Provide a response or choose a snippet to send.", ephemeral=True
+        )
+
+    if response is not None:
+        if not response.strip() and not snippet_to_assign:
+            return await interaction.response.send_message(
+                "❌ Response cannot be empty unless a snippet is used.",
+                ephemeral=True,
+            )
+        entry["response"] = response
+
+    if snippet_to_assign is not None:
+        entry["snippet"] = snippet_to_assign
+
     entry["pattern"] = pattern
-    entry["response"] = response
     entry["dynamic"] = entry.get("dynamic", False) if dynamic is None else bool(dynamic)
+    entry["match_type"] = selected_match_type
+    if selected_match_type == "contains":
+        if case_sensitive is None:
+            entry["case_sensitive"] = bool(entry.get("case_sensitive"))
+        else:
+            entry["case_sensitive"] = bool(case_sensitive)
+    else:
+        entry["case_sensitive"] = False
 
     guild_replies[name] = ensure_autoreply_defaults(entry)
     save_auto_replies()
@@ -1497,7 +1594,10 @@ async def list_autoreplies(interaction: discord.Interaction):
         dynamic_flag = "Dynamic" if entry.get("dynamic") else "Static"
         cooldown_seconds = int(entry.get("cooldown_seconds") or 0)
         scope = entry.get("cooldown_scope", "guild")
-        summary = [f"Pattern: `{pattern}`", dynamic_flag]
+        match_type = str(entry.get("match_type") or "regex").title()
+        snippet_name = entry.get("snippet") or ""
+        case_sensitive = bool(entry.get("case_sensitive"))
+        summary = [f"Pattern: `{pattern}`", f"Match: {match_type}", dynamic_flag]
         if cooldown_seconds:
             summary.append(f"Cooldown: {format_duration(cooldown_seconds)} ({scope})")
         include_roles = entry.get("include_roles") or []
@@ -1512,6 +1612,12 @@ async def list_autoreplies(interaction: discord.Interaction):
             summary.append(f"Allowed channels only ({len(include_channels)})")
         if exclude_channels:
             summary.append(f"Blocked channels ({len(exclude_channels)})")
+        if snippet_name:
+            summary.append(f"Snippet: !{snippet_name}")
+        if snippet_name and entry.get("dynamic"):
+            summary.append("Snippet args from capture groups")
+        if match_type.lower() == "contains" and case_sensitive:
+            summary.append("Case-sensitive")
         embed.add_field(
             name=name,
             value=" • ".join(summary)[:900] or "-",
@@ -1536,6 +1642,8 @@ async def list_autoreplies(interaction: discord.Interaction):
         app_commands.Choice(name="Per User", value="user"),
         app_commands.Choice(name="Per Member", value="member"),
         app_commands.Choice(name="Per Channel + User", value="channel_user"),
+        app_commands.Choice(name="Per Category", value="category"),
+        app_commands.Choice(name="Per Category + User", value="category_user"),
         app_commands.Choice(name="Per Thread", value="thread"),
         app_commands.Choice(name="Per Primary Role", value="role"),
     ]
@@ -1682,13 +1790,24 @@ async def on_message(message):
             if not pattern:
                 continue
 
-            try:
-                match = re.search(pattern, message.content)
-            except re.error:
-                continue
+            match_type = str(entry.get("match_type") or "regex").lower()
+            match: Optional[re.Match]
 
-            if not match:
-                continue
+            if match_type == "contains":
+                case_sensitive = bool(entry.get("case_sensitive"))
+                haystack = message.content if case_sensitive else message.content.lower()
+                needle = pattern if case_sensitive else pattern.lower()
+                if needle not in haystack:
+                    continue
+                match = None
+            else:
+                try:
+                    match = re.search(pattern, message.content)
+                except re.error:
+                    continue
+
+                if not match:
+                    continue
 
             handled = await dispatch_auto_reply(message, name, entry, match)
             if handled:
