@@ -15,7 +15,7 @@ import json
 import os
 import random
 import re
-from typing import Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 
 # =====================================================
@@ -555,7 +555,53 @@ def load_auto_replies():
     raw = read_json("auto_replies.json", {})
     migrated = False
 
-    for guild_id, replies in raw.items():
+    for guild_id, replies in list(raw.items()):
+        if isinstance(replies, list):
+            converted: Dict[str, dict] = {}
+            for idx, item in enumerate(replies):
+                entry: dict
+                name: str
+
+                if isinstance(item, dict):
+                    entry = dict(item)
+                    name = str(
+                        entry.get("pattern")
+                        or entry.get("name")
+                        or f"entry_{idx}"
+                    )
+                    if not entry.get("pattern"):
+                        entry["pattern"] = name
+                elif isinstance(item, (list, tuple)):
+                    if not item:
+                        continue
+                    pattern = str(item[0])
+                    response = str(item[1]) if len(item) > 1 else pattern
+                    name = pattern or f"entry_{idx}"
+                    entry = {
+                        "pattern": pattern,
+                        "response": response,
+                        "dynamic": False,
+                    }
+                else:
+                    name = f"entry_{idx}"
+                    entry = {
+                        "pattern": str(item),
+                        "response": str(item),
+                        "dynamic": False,
+                    }
+
+                original_name = name
+                suffix = 1
+                while name in converted:
+                    suffix += 1
+                    name = f"{original_name}_{suffix}"
+
+                converted[name] = ensure_autoreply_defaults(entry)
+
+            raw[guild_id] = converted
+            replies = converted
+            migrated = True
+
         for name, data in list(replies.items()):
             if not isinstance(data, dict):
                 raw[guild_id][name] = ensure_autoreply_defaults({
