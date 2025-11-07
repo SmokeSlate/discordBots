@@ -1362,7 +1362,13 @@ async def list_snippets(interaction: discord.Interaction):
 # =====================================================
 
 
-@bot.tree.command(name="setautoreply", description="Create or update an auto reply triggered by regex")
+autoreply_group = app_commands.Group(
+    name="autoreply",
+    description="Manage auto replies",
+)
+
+
+@autoreply_group.command(name="set", description="Create or update an auto reply triggered by regex")
 @app_commands.describe(
     name="Name of the auto reply",
     pattern="Regex pattern to match messages",
@@ -1411,7 +1417,7 @@ async def set_autoreply(
     await interaction.response.send_message(f"✅ Auto reply `{name}` {action}.", ephemeral=True)
 
 
-@bot.tree.command(name="removeautoreply", description="Delete an auto reply")
+@autoreply_group.command(name="remove", description="Delete an auto reply")
 @app_commands.describe(name="Name of the auto reply to remove")
 async def remove_autoreply(interaction: discord.Interaction, name: str):
     if not has_permissions_or_override(interaction):
@@ -1431,7 +1437,7 @@ async def remove_autoreply(interaction: discord.Interaction, name: str):
     await interaction.response.send_message("❌ Auto reply not found.", ephemeral=True)
 
 
-@bot.tree.command(name="listautoreplies", description="List auto replies for this server")
+@autoreply_group.command(name="list", description="List auto replies for this server")
 async def list_autoreplies(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
     guild_replies = auto_replies.get(gid)
@@ -1488,7 +1494,7 @@ async def list_autoreplies(interaction: discord.Interaction):
         app_commands.Choice(name="Per Primary Role", value="role"),
     ]
 )
-@bot.tree.command(name="autoreplyoptions", description="Configure filters and cooldowns for an auto reply")
+@autoreply_group.command(name="options", description="Configure filters and cooldowns for an auto reply")
 async def autoreply_options(
     interaction: discord.Interaction,
     name: str,
@@ -1590,6 +1596,9 @@ async def autoreply_options(
         "✅ Auto reply updated:\n" + "\n".join(summary_lines),
         ephemeral=True,
     )
+
+
+bot.tree.add_command(autoreply_group)
 
 
 @bot.event
@@ -2157,15 +2166,31 @@ async def clear_messages(
 @bot.tree.command(name="help", description="Display all available commands")
 async def help_mod(interaction: discord.Interaction):
     def cmd(name: str) -> str:
-        command = bot.tree.get_command(name)
+        parts = name.split()
+        if not parts:
+            return "/"
+
+        command = bot.tree.get_command(parts[0])
         if not command:
             return f"/{name}"
 
-        mention = getattr(command, "mention", None)
+        current = command
+        for part in parts[1:]:
+            if not hasattr(current, "get_command"):
+                current = None
+                break
+            current = current.get_command(part)
+            if current is None:
+                break
+
+        if current is None:
+            return f"/{name}"
+
+        mention = getattr(current, "mention", None)
         if mention:
             return mention
 
-        return f"/{command.qualified_name}"
+        return f"/{current.qualified_name}"
 
     embed = discord.Embed(
         title="🛡️ Bot Commands",
@@ -2191,6 +2216,14 @@ async def help_mod(interaction: discord.Interaction):
                f"{cmd('removesnippet')} <trigger> • Remove static\n"
                f"{cmd('removedynamicsnippet')} <trigger> • Remove dynamic\n"
                f"{cmd('listsnippets')} • List all snippets"),
+        inline=False
+    )
+    embed.add_field(
+        name="🤖 Auto Reply Commands",
+        value=(f"{cmd('autoreply set')} <name> <pattern> <response> [dynamic] • Create/update\n"
+               f"{cmd('autoreply remove')} <name> • Delete\n"
+               f"{cmd('autoreply list')} • List configured replies\n"
+               f"{cmd('autoreply options')} <name> [filters/cooldown] • Configure filters"),
         inline=False
     )
     embed.add_field(
