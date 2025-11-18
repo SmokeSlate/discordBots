@@ -504,6 +504,21 @@ async def render_snippet_content(
     return content
 
 
+def build_reply_reference(message: discord.Message) -> Optional[discord.MessageReference]:
+    """Return the message reference the user replied to, if any."""
+
+    if not message.reference:
+        return None
+
+    ref = message.reference
+    return discord.MessageReference(
+        message_id=ref.message_id,
+        channel_id=ref.channel_id or (ref.resolved.channel.id if ref.resolved else None),
+        guild_id=ref.guild_id,
+        fail_if_not_exists=False,
+    )
+
+
 async def dispatch_snippet(
     message: discord.Message,
     trigger: str,
@@ -520,8 +535,15 @@ async def dispatch_snippet(
 
     content = await render_snippet_content(message, entry, args)
 
+    reference = build_reply_reference(message)
+    mention_author = reference is not None
+
     try:
-        await message.channel.send(content)
+        await message.channel.send(
+            content,
+            reference=reference,
+            mention_author=mention_author,
+        )
     except discord.Forbidden:
         try:
             await message.channel.send(
@@ -792,8 +814,15 @@ async def dispatch_auto_reply(
     if not content:
         return False
 
+    reference = build_reply_reference(message)
+    mention_author = reference is not None
+
     try:
-        await message.channel.send(content)
+        await message.channel.send(
+            content,
+            reference=reference,
+            mention_author=mention_author,
+        )
     except discord.Forbidden:
         return False
     except discord.HTTPException:
