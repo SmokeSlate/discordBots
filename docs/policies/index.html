@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmokeBot - Policies</title>
+    <meta name="description" content="SmokeBot privacy policy and terms of service, embedded for quick reference.">
+    <meta name="theme-color" content="#0a0a0a">
+    <link rel="icon" href="../assets/logo.png" type="image/png">
+    <link rel="apple-touch-icon" href="../assets/logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../assets/tailwind.css">
+    <link rel="stylesheet" href="../assets/css/smokebot.css">
+</head>
+<body class="min-h-screen bg-black text-white">
+    <nav class="fixed top-0 left-0 right-0 z-50">
+        <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
+            <div class="flex justify-between items-center w-full">
+                <a href="../index.html#top" class="flex items-center text-xl font-medium text-white hover:text-yellow-400" aria-label="SmokeBot home">
+                    <img src="../assets/logo.png" alt="SmokeBot logo" class="brand-logo">
+                    <span class="sr-only">SmokeBot</span>
+                </a>
+                <div class="hidden md:flex space-x-4">
+                    <a href="../features/" class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Features</a>
+                    <a href../commands/ class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Commands</a>
+                    <a href="../setup/" class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Setup</a>
+                </div>
+                <button id="mobile-menu-button" class="hover-crt md:hidden border border-white text-white px-3 py-1 text-sm hover:bg-white hover:text-black transition-colors duration-200">
+                    Menu
+                </button>
+            </div>
+        </div>
+        <div id="mobile-menu" class="hidden md:hidden bg-black bg-opacity-95 border-t border-gray-800">
+            <div class="site-gutter py-2 space-y-1">
+                <a href="../features/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Features</a>
+                <a href="../commands/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Commands</a>
+                <a href="../setup/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Setup</a>
+            </div>
+        </div>
+    </nav>
+
+    <main id="top" class="main-content min-h-screen">
+        <section class="retro-section">
+            <div class="section-shell hero-grid">
+                <div class="hero-stack">
+                    <div class="hero-badge">Policies</div>
+                    <h1 class="hero-title font-bold text-white tracking-tight">
+                        SmokeBot privacy & terms
+                    </h1>
+                    <p class="hero-subtitle font-mono">
+                        Reference the policy documents kept with the bot so staff and users know how data is handled.
+                    </p>
+                    <p class="hero-copy">
+                        Scroll to read the Privacy Policy and Terms of Service directly on this page.
+                    </p>
+                    <div class="hero-actions">
+                        <a class="btn-retro hover-crt" href="../setup/">Add SmokeBot</a>
+                        <a class="btn-retro secondary hover-crt" href="../commands/">Command cheat sheet</a>
+                    </div>
+                </div>
+                <div class="rail">
+                    <div class="band">
+                        <h3>Transparency</h3>
+                        <p class="text-subtle">Policies live in the site so you can link them in your server without sending people elsewhere.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="retro-section section-spacing border-t border-gray-900">
+            <div class="section-shell">
+                <div class="section-header">
+                    <div class="eyebrow">Privacy Policy</div>
+                    <p>Last updated: 12/8/2025</p>
+                    <div class="section-divider"></div>
+                </div>
+                <div class="rail">
+                    <div class="band">
+                        <p>SmokeBot is a Discord moderation and support assistant developed for deployment by individual server owners. This Privacy Policy explains what limited information the bot processes when it operates in a Discord server, how that information is used, and the choices available to server administrators and members.</p>
+                    </div>
+                    <div class="band">
+                        <h3>1. Information We Process</h3>
+                        <p>SmokeBot only accesses data that Discord makes available to bots in servers where it has been invited. The bot does not collect information outside of Discord. Depending on the features enabled by server administrators, SmokeBot may process:</p>
+                        <h4>1.1 Ticketing system</h4>
+                        <ul>
+                            <li>Discord user IDs for the member who created the ticket and staff who interact with it</li>
+                            <li>Category selection, ticket status, creation and closure timestamps</li>
+                            <li>The channel or thread ID that hosts the ticket conversation</li>
+                            <li>Any messages voluntarily posted in the ticket thread (handled directly on Discord - not stored by the bot)</li>
+                        </ul>
+                        <h4>1.2 Reaction roles</h4>
+                        <ul>
+                            <li>Message IDs, emoji identifiers, and the role ID that should be granted or removed</li>
+                            <li>Guild (server) IDs necessary to apply the role</li>
+                        </ul>
+                        <h4>1.3 Snippets</h4>
+                        <ul>
+                            <li>Per-guild snippet triggers and the text that should be posted when a trigger is used</li>
+                            <li>Whether a snippet is dynamic and any placeholder structure configured by server staff</li>
+                        </ul>
+                        <h4>1.4 Persistent pins</h4>
+                        <ul>
+                            <li>The text content configured for the persistent pin</li>
+                            <li>The IDs for the message, channel, guild, and the administrator who set the pin</li>
+                        </ul>
+                        <h4>1.5 Moderation utilities</h4>
+                        <ul>
+                            <li>IDs and parameters needed to complete actions like timeout, kick, ban, or purge; these are not stored after completion.</li>
+                        </ul>
+                        <p>SmokeBot requires access to message content in servers where administrators enable snippet functionality or pin reposting. This access is limited to channels where the bot has permission so it can detect snippet triggers and keep tracked pins up to date.</p>
+                    </div>
+                    <div class="band">
+                        <h3>2. How We Use Information</h3>
+                        <ul>
+                            <li>Provide and manage ticketing, snippet, pin, reaction role, and moderation features requested by server administrators.</li>
+                            <li>Maintain configuration across restarts by storing the minimum required settings in local JSON files on the host machine.</li>
+                            <li>Respond to slash commands and interaction events routed through Discord.</li>
+                        </ul>
+                        <p>SmokeBot does not use the data for analytics, advertising, or any secondary purposes.</p>
+                    </div>
+                    <div class="band">
+                        <h3>3. Where Information Is Stored</h3>
+                        <p>All configuration data is stored on a Google Cloud server operated for SmokeBot. No data is transmitted to external third parties other than Discord's platform APIs. The operator secures the cloud environment and access to the stored data.</p>
+                    </div>
+                    <div class="band">
+                        <h3>4. Data Retention and Deletion</h3>
+                        <p>Stored configuration data remains until a server administrator edits or removes it or deletes the relevant files. Ticket threads remain on Discord until staff archive or delete them.</p>
+                    </div>
+                    <div class="band">
+                        <h3>5. Legal Basis</h3>
+                        <p>For EU/EEA servers, SmokeBot processes the limited personal data described above under the legitimate interest of the administrators who deploy the bot.</p>
+                    </div>
+                    <div class="band">
+                        <h3>6. Security</h3>
+                        <p>The bot relies on the hosting operator for physical and network security. Administrators should safeguard the Discord bot token and host access.</p>
+                    </div>
+                    <div class="band">
+                        <h3>7. Children's Privacy</h3>
+                        <p>SmokeBot does not knowingly collect personal information from children. Discord requires users to be at least 13 years old (or the minimum age in their jurisdiction).</p>
+                    </div>
+                    <div class="band">
+                        <h3>8. Third-Party Services</h3>
+                        <p>SmokeBot interacts exclusively with Discord's APIs. Use of the bot is also subject to the <a class="text-yellow-300 hover:text-white hover-crt" href="https://discord.com/terms" target="_blank" rel="noopener noreferrer">Discord Terms of Service</a> and <a class="text-yellow-300 hover:text-white hover-crt" href="https://discord.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p>
+                    </div>
+                    <div class="band">
+                        <h3>9. Changes to This Policy</h3>
+                        <p>We may update this Privacy Policy. When changes are made, the "Last updated" date will be revised. Material changes will be communicated to server administrators.</p>
+                    </div>
+                    <div class="band">
+                        <h3>10. Contact</h3>
+                        <p>SmokeBot is hosted on Google Cloud; the primary contact is the individual or team operating the SmokeBot instance for your server.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="retro-section section-spacing border-t border-gray-900">
+            <div class="section-shell">
+                <div class="section-header">
+                    <div class="eyebrow">Terms of Service</div>
+                    <p>Last updated: 12/8/2025</p>
+                    <div class="section-divider"></div>
+                </div>
+                <div class="rail">
+                    <div class="band">
+                        <p>These Terms govern the use of SmokeBot. By inviting or using SmokeBot in your Discord server, you agree to them.</p>
+                    </div>
+                    <div class="band">
+                        <h3>1. Eligibility and Account Responsibility</h3>
+                        <ul>
+                            <li>SmokeBot may only be installed by individuals who can manage the Discord server where it will operate.</li>
+                            <li>You must comply with Discord's Terms of Service, Community Guidelines, and applicable laws.</li>
+                            <li>Server administrators are responsible for managing access to the bot token and hosting environment.</li>
+                        </ul>
+                    </div>
+                    <div class="band">
+                        <h3>2. Bot Functionality</h3>
+                        <p>SmokeBot offers ticketing, snippet automation, persistent pins, reaction roles, and moderation utilities. It processes Discord data only as necessary to provide these features.</p>
+                    </div>
+                    <div class="band">
+                        <h3>3. Acceptable Use</h3>
+                        <ul>
+                            <li>Do not violate Discord policies or applicable law.</li>
+                            <li>Do not harass, discriminate, or exploit users.</li>
+                            <li>Do not access or modify the bot's code or data without authorization.</li>
+                            <li>Do not interfere with the bot's operation.</li>
+                        </ul>
+                        <p>Server administrators should restrict moderation/configuration commands to trusted staff.</p>
+                    </div>
+                    <div class="band">
+                        <h3>4. Data Practices</h3>
+                        <p>Data practices are described in the Privacy Policy above.</p>
+                    </div>
+                    <div class="band">
+                        <h3>5. Hosting and Availability</h3>
+                        <p>SmokeBot runs on a Google Cloud server managed by the operator. Availability depends on the cloud provider and Discord; no uptime guarantees are provided. Features may change without notice.</p>
+                    </div>
+                    <div class="band">
+                        <h3>6. Support</h3>
+                        <p>Support is best-effort by the maintainer(s); there is no obligation to provide fixes or updates.</p>
+                    </div>
+                    <div class="band">
+                        <h3>7. Termination</h3>
+                        <p>Remove SmokeBot anytime by revoking its invite. Access may be suspended for violations.</p>
+                    </div>
+                    <div class="band">
+                        <h3>8. Disclaimer of Warranties</h3>
+                        <p>SMOKEBOT IS PROVIDED "AS IS" WITHOUT WARRANTIES OF ANY KIND. USE AT YOUR OWN RISK.</p>
+                    </div>
+                    <div class="band">
+                        <h3>9. Limitation of Liability</h3>
+                        <p>Maintainers are not liable for indirect or consequential damages arising from use of SmokeBot.</p>
+                    </div>
+                    <div class="band">
+                        <h3>10. Indemnification</h3>
+                        <p>You agree to indemnify and hold harmless the maintainer(s) from claims arising out of misuse of the bot or violation of these Terms.</p>
+                    </div>
+                    <div class="band">
+                        <h3>11. Changes to These Terms</h3>
+                        <p>Terms may be updated; continued use after changes constitutes acceptance.</p>
+                    </div>
+                    <div class="band">
+                        <h3>12. Contact</h3>
+                        <p>Contact the individual or team operating the bot in your server for questions about these Terms.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="retro-section text-gray-400 py-8 border-t border-gray-800">
+        <div class="site-gutter">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-4 md:mb-0">
+                    <p class="text-sm">SmokeBot - Discord support & automation toolkit.</p>
+                </div>
+                <div class="flex space-x-6">
+                    <a href="#top" class="hover-crt text-gray-400 hover:text-white transition-colors">Back to top</a>
+                    <a href="../setup/" class="hover-crt text-gray-400 hover:text-white transition-colors">Add SmokeBot</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../assets/js/smokebot.js" defer></script>
+</body>
+</html>

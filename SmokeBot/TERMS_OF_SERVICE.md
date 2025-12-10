@@ -1,6 +1,6 @@
 # SmokeBot Terms of Service
 
-_Last updated: 2024-05-06_
+_Last updated: 12/8/2025_
 
 These Terms of Service ("Terms") govern the use of SmokeBot, a Discord moderation and support bot. By inviting or using SmokeBot in your Discord server, you agree to be bound by these Terms. If you do not agree, do not deploy or interact with the bot.
 

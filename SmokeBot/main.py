@@ -1370,22 +1370,6 @@ async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, co
     save_snippets()
     await interaction.response.send_message(f"✅ Dynamic snippet `!{trigger}` added.", ephemeral=True)
 
-@bot.tree.command(name="editsnippet", description="Edit a static snippet")
-@app_commands.describe(trigger="Trigger word (no !)", content="New content")
-async def edit_snippet(interaction: discord.Interaction, trigger: str, content: str):
-    if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
-    trigger = trigger.lstrip("!")
-    gid = str(interaction.guild.id)
-    if gid in snippets and trigger in snippets[gid]:
-        entry = ensure_snippet_defaults(snippets[gid][trigger])
-        entry["content"] = content
-        entry["dynamic"] = False
-        snippets[gid][trigger] = entry
-        save_snippets()
-        return await interaction.response.send_message(f"✅ Snippet `!{trigger}` updated.", ephemeral=True)
-    await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
-
 @bot.tree.command(name="editdynamicsnippet", description="Edit a dynamic snippet (or toggle dynamic mode)")
 @app_commands.describe(trigger="Trigger word (no !)", content="New content", dynamic="True/False for dynamic mode")
 async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, content: str, dynamic: Optional[bool] = True):
@@ -1404,14 +1388,14 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
 
 
 @bot.tree.command(
-    name="advancededitsnippet",
-    description="Open a modal to edit snippet content with multiline support",
+    name="editsnippet",
+    description="Open the default form to edit snippet content with multiline support",
 )
 @app_commands.describe(
     trigger="Trigger word (no !)",
     dynamic="Optional override for dynamic mode (leave blank to keep current)",
 )
-async def advanced_edit_snippet(
+async def edit_snippet_form(
     interaction: discord.Interaction, trigger: str, dynamic: Optional[bool] = None
 ):
     if not has_permissions_or_override(interaction):
@@ -2405,8 +2389,8 @@ async def help_mod(interaction: discord.Interaction):
         name="📝 Snippet Commands",
         value=(f"{cmd('addsnippet')} <trigger> <content> • Add static\n"
                f"{cmd('adddynamicsnippet')} <trigger> <content> • Add dynamic with {{1}},{{2}},...\n"
-               f"{cmd('editsnippet')} <trigger> <content> • Edit static\n"
                f"{cmd('editdynamicsnippet')} <trigger> <content> [dynamic] • Edit/toggle dynamic\n"
+               f"{cmd('editsnippet')} <trigger> [dynamic] • Open form (default) for multiline edits\n"
                f"{cmd('removesnippet')} <trigger> • Remove static\n"
                f"{cmd('removedynamicsnippet')} <trigger> • Remove dynamic\n"
                f"{cmd('listsnippets')} • List all snippets"),

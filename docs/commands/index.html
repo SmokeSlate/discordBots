@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en" class="">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmokeBot - Commands</title>
+    <meta
+      name="description"
+      content="SmokeBot command list for tickets, snippets, auto replies, giveaways, pins, reaction roles, and moderation."
+    />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="icon" href="/assets/logo.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/assets/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/tailwind.css" />
+    <link rel="stylesheet" href="/assets/css/smokebot.css" />
+  </head>
+  <body class="min-h-screen bg-black text-white">
+    <nav class="fixed top-0 left-0 right-0 z-50">
+      <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
+        <div class="flex justify-between items-center w-full">
+          <a
+            href="/index.html#top"
+            class="flex items-center text-xl font-medium text-white hover:text-yellow-400"
+            aria-label="SmokeBot home"
+          >
+            <img
+              src="/assets/logo.png"
+              alt="SmokeBot logo"
+              class="brand-logo"
+            />
+            <span class="sr-only">SmokeBot</span>
+          </a>
+          <div class="hidden md:flex space-x-4">
+            <a
+              href="/features/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Features</a
+            >
+            <a
+              href="/commands/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Commands</a
+            >
+            <a
+              href="/setup/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Setup</a
+            >
+          </div>
+          <button
+            id="mobile-menu-button"
+            class="hover-crt md:hidden border border-white text-white px-3 py-1 text-sm hover:bg-white hover:text-black transition-colors duration-200"
+          >
+            Menu
+          </button>
+        </div>
+      </div>
+      <div
+        id="mobile-menu"
+        class="hidden md:hidden bg-black bg-opacity-95 border-t border-gray-800"
+      >
+        <div class="site-gutter py-2 space-y-1">
+          <a
+            href="/features/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Features</a
+          >
+          <a
+            href="/commands/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Commands</a
+          >
+          <a
+            href="/setup/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Setup</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <main id="top" class="main-content min-h-screen">
+      <section class="retro-section">
+        <div class="section-shell hero-grid">
+          <div class="hero-stack">
+            <div class="hero-badge">Command list</div>
+            <h1 class="hero-title font-bold text-white tracking-tight">
+              SmokeBot command list
+            </h1>
+            <p class="hero-subtitle font-mono">
+              Slash-first control for tickets, snippets, auto replies,
+              giveaways, pins, reaction roles, and moderation.
+            </p>
+            <p class="hero-copy">
+              Run <code>/help</code> in Discord for the live embed. Use this
+              page to see everything grouped by system.
+            </p>
+            <div class="hero-actions">
+              <a class="btn-retro hover-crt" href="/features/"
+                >Features overview</a
+              >
+              <a class="btn-retro secondary hover-crt" href="/setup/"
+                >Setup checklist</a
+              >
+            </div>
+          </div>
+          <div class="rail">
+            <div class="band">
+              <h3>Prefix snippets</h3>
+              <p class="text-subtle">
+                Snippets can still be fired with <code>!trigger</code>. Reply
+                with the trigger to mention the original author.
+              </p>
+            </div>
+            <div class="band">
+              <h3>Safety</h3>
+              <p class="text-subtle">
+                Commands respond ephemerally on permission issues to keep
+                channels clean.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Commands</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">
+              Grouped by system
+            </h2>
+            <p>
+              Use slash commands primarily; snippets respond to prefixes for
+              speed.
+            </p>
+            <div class="section-divider"></div>
+          </div>
+          <div class="command-grid">
+            <article class="command-card">
+              <div class="eyebrow">Tickets</div>
+              <h3 class="text-xl font-semibold text-white">Support threads</h3>
+              <p>Deploy the ticket picker and review activity.</p>
+              <div class="command-pills">
+                <span class="command-chip">/ticket</span>
+                <span class="command-chip">/ticketstats</span>
+                <span class="command-chip">/listtickets</span>
+                <span class="command-chip">/addticketcategory</span>
+                <span class="command-chip">/removeticketcategory</span>
+                <span class="command-chip">/listticketcategories</span>
+              </div>
+            </article>
+            <article class="command-card">
+              <div class="eyebrow">Snippets</div>
+              <h3 class="text-xl font-semibold text-white">Reusable replies</h3>
+              <p>
+                Slash-managed snippets for staff speed with a default form for
+                content.
+              </p>
+              <div class="command-pills">
+                <span class="command-chip">/addsnippet</span>
+                <span class="command-chip">/adddynamicsnippet</span>
+                <span class="command-chip">/editdynamicsnippet</span>
+                <span class="command-chip">/editsnippet</span>
+                <span class="command-chip">/removesnippet</span>
+                <span class="command-chip">/removedynamicsnippet</span>
+                <span class="command-chip">/listsnippets</span>
+              </div>
+              <p class="command-note">
+                Use the form from <code>/editsnippet</code> as the default way
+                to enter snippet text. Use <code>!trigger</code> to fire a
+                snippet; reply with the trigger to mention the original author.
+              </p>
+            </article>
+            <article class="command-card">
+              <div class="eyebrow">Auto replies</div>
+              <h3 class="text-xl font-semibold text-white">
+                Pattern-based replies
+              </h3>
+              <p>Regex/contains matching with filters and cooldowns.</p>
+              <div class="command-pills">
+                <span class="command-chip">/autoreply set</span>
+                <span class="command-chip">/autoreply options</span>
+                <span class="command-chip">/autoreply list</span>
+                <span class="command-chip">/autoreply remove</span>
+              </div>
+            </article>
+            <article class="command-card">
+              <div class="eyebrow">Giveaways</div>
+              <h3 class="text-xl font-semibold text-white">
+                Button-driven entries
+              </h3>
+              <p>Host a timed giveaway with optional role requirements.</p>
+              <div class="command-pills">
+                <span class="command-chip">/giveaway</span>
+              </div>
+            </article>
+            <article class="command-card">
+              <div class="eyebrow">Pins & roles</div>
+              <h3 class="text-xl font-semibold text-white">
+                Message utilities
+              </h3>
+              <p>Keep crucial info visible and map reactions to roles.</p>
+              <div class="command-pills">
+                <span class="command-chip">/setpin</span>
+                <span class="command-chip">/removepin</span>
+                <span class="command-chip">/listpins</span>
+                <span class="command-chip">/reactionrole</span>
+                <span class="command-chip">/removereactionrole</span>
+              </div>
+            </article>
+            <article class="command-card">
+              <div class="eyebrow">Moderation</div>
+              <h3 class="text-xl font-semibold text-white">Staff toolkit</h3>
+              <p>Ephemeral confirmations and safe permission handling.</p>
+              <div class="command-pills">
+                <span class="command-chip">/timeout</span>
+                <span class="command-chip">/untimeout</span>
+                <span class="command-chip">/kick</span>
+                <span class="command-chip">/ban</span>
+                <span class="command-chip">/unban</span>
+                <span class="command-chip">/slowmode</span>
+                <span class="command-chip">/clear</span>
+                <span class="command-chip">/addrole</span>
+                <span class="command-chip">/removerole</span>
+                <span class="command-chip">/addroleall</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Next</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">
+              Need setup steps?
+            </h2>
+            <p>Walk through token, categories, snippets, and storage.</p>
+            <div class="section-divider"></div>
+          </div>
+          <div class="hero-actions">
+            <a class="btn-retro hover-crt" href="/setup/">Setup checklist</a>
+            <a class="btn-retro secondary hover-crt" href="/policies/"
+              >Policies</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="retro-section text-gray-400 py-8 border-t border-gray-800">
+      <div class="site-gutter">
+        <div class="flex flex-col md:flex-row justify-between items-center">
+          <div class="mb-4 md:mb-0">
+            <p class="text-sm">
+              SmokeBot - Discord support & automation toolkit.
+            </p>
+          </div>
+          <div class="flex space-x-6">
+            <a
+              href="/index.html#top"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Back to top</a
+            >
+            <a
+              href="/PRIVACY_POLICY.md"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Privacy</a
+            >
+            <a
+              href="/TERMS_OF_SERVICE.md"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Terms</a
+            >
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <script src="/assets/js/smokebot.js" defer></script>
+  </body>
+</html>

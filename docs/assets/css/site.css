@@ -1,0 +1,25 @@
+@font-face {
+    font-family: 'Press Start 2P';
+    font-style: normal;
+    font-weight: 400;
+    src: local('Press Start 2P'), url('./font.woff') format('woff');
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'SmokeBot Sans';
+    font-style: normal;
+    font-weight: 100 700;
+    src: url('../font/CascadiaCode-VariableFont_wght.ttf') format('truetype-variations');
+    font-display: swap;
+}
+
+.site-gutter {
+    box-sizing: border-box;
+}
+
+.page-hero-title {
+    font-size: clamp(1.75rem, 6vw, 3.5rem);
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+}

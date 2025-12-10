@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmokeBot - Discord Support & Automation</title>
+    <meta name="description" content="SmokeBot is a Discord support bot with ticket threads, snippets, regex auto replies, giveaways, reaction roles, pins, and moderation tools.">
+    <meta name="theme-color" content="#0a0a0a">
+    <link rel="icon" href="./assets/logo.png" type="image/png">
+    <link rel="apple-touch-icon" href="./assets/logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./assets/tailwind.css">
+    <link rel="stylesheet" href="./assets/css/smokebot.css">
+</head>
+<body class="min-h-screen bg-black text-white">
+    <nav class="fixed top-0 left-0 right-0 z-50">
+        <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
+            <div class="flex justify-between items-center w-full">
+                <a href="#top" class="flex items-center text-xl font-medium text-white hover:text-yellow-400" aria-label="SmokeBot home">
+                    <img src="./assets/logo.png" alt="SmokeBot logo" class="brand-logo">
+                    <span class="sr-only">SmokeBot</span>
+                </a>
+                <div class="hidden md:flex space-x-4">
+                    <a href="./features/" class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Features</a>
+                    <a href="./commands/" class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Commands</a>
+                    <a href="./setup/" class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200">Setup</a>
+                </div>
+                <button id="mobile-menu-button" class="hover-crt md:hidden border border-white text-white px-3 py-1 text-sm hover:bg-white hover:text-black transition-colors duration-200">
+                    Menu
+                </button>
+            </div>
+        </div>
+        <div id="mobile-menu" class="hidden md:hidden bg-black bg-opacity-95 border-t border-gray-800">
+            <div class="site-gutter py-2 space-y-1">
+                <a href="./features/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Features</a>
+                <a href="./commands/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Commands</a>
+                <a href="./setup/" class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200">Setup</a>
+            </div>
+        </div>
+    </nav>
+
+    <main id="top" class="main-content min-h-screen">
+        <section class="retro-section">
+            <div class="section-shell hero-grid">
+                <div class="hero-stack">
+                    <h1 class="hero-title font-bold text-white tracking-tight">
+                        SmokeBot
+                    </h1>
+                    <p class="hero-subtitle">
+                        Private ticket threads, snippet engine, regex/contains auto replies, giveaways, reaction roles, pins, and moderation.
+                    </p>
+                    <div class="hero-actions">
+                        <a class="btn-retro hover-crt" href="https://discord.com/oauth2/authorize?client_id=1375925201191178300">Add to Discord</a>
+                        <a class="btn-retro secondary hover-crt" href="./features/">See features</a>
+                        <a class="btn-retro secondary hover-crt" href="./commands/">Command list</a>
+                    </div>
+                    <div class="pill-row">
+                        <span class="pill">Private ticket threads</span>
+                        <span class="pill">Ephemeral confirmations</span>
+                        <span class="pill">Persists between restarts</span>
+                        <span class="pill">Slash + prefix snippets</span>
+                    </div>
+                </div>
+                <div class="rail">
+                    <div class="band">
+                        <h3>Support-first workflow</h3>
+                        <p>Category picker posts a ticket panel, creates a private thread, and keeps the “used slash” noise out of public channels.</p>
+                        <div class="stat-grid section-gap">
+                            <div>
+                                <div class="stat-number">/ticket</div>
+                                <div class="stat-label">Menu, stats, list</div>
+                            </div>
+                            <div>
+                                <div class="stat-number">Controls</div>
+                                <div class="stat-label">Close + staff notes</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="band">
+                        <h3>Automation that sticks</h3>
+                        <p>Regex/contains auto replies with filters, cooldown scopes, and optional snippets - ready after a restart without extra work.</p>
+                    </div>
+                    <div class="band">
+                        <h3>Snippets, everywhere</h3>
+                        <p>Slash-managed snippets plus prefix triggers, dynamic placeholders, and modal editing keep responses consistent for staff and faster for members.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="retro-section section-spacing border-t border-gray-900">
+            <div class="section-shell">
+                <div class="section-header">
+                    <div class="eyebrow">Navigation</div>
+                    <h2 class="text-3xl md:text-4xl font-bold text-white">Explore SmokeBot</h2>
+                    <p>Jump into the focused pages for details on features, commands, setup steps, and policies.</p>
+                    <div class="section-divider"></div>
+                </div>
+                <div class="feature-grid">
+                    <article class="feature-card">
+                        <h3>Features</h3>
+                        <p>Tickets, snippets, auto replies, giveaways, pins, and moderation.</p>
+                        <a class="btn-retro secondary hover-crt w-full justify-center mt-2" href="./features/">Open features</a>
+                    </article>
+                    <article class="feature-card">
+                        <h3>Commands</h3>
+                        <p>Slash-first command list plus prefix snippet usage.</p>
+                        <a class="btn-retro secondary hover-crt w-full justify-center mt-2" href="./commands/">Open commands</a>
+                    </article>
+                    <article class="feature-card">
+                        <h3>Setup</h3>
+                        <p>Token, category seeding, snippets, auto replies, and backups.</p>
+                        <a class="btn-retro secondary hover-crt w-full justify-center mt-2" href="./setup/">Open setup</a>
+                    </article>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="retro-section text-gray-400 py-8 border-t border-gray-800">
+        <div class="site-gutter">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-4 md:mb-0">
+                    <p class="text-sm">SmokeBot - Discord support & automation toolkit.</p>
+                </div>
+                <div class="flex space-x-6">
+                    <a href="#top" class="hover-crt text-gray-400 hover:text-white transition-colors">Back to top</a>
+                    <a href="./PRIVACY_POLICY.md" class="hover-crt text-gray-400 hover:text-white transition-colors">Privacy</a>
+                    <a href="./TERMS_OF_SERVICE.md" class="hover-crt text-gray-400 hover:text-white transition-colors">Terms</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="./assets/js/smokebot.js" defer></script>
+</body>
+</html>

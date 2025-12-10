@@ -1,6 +1,6 @@
 # SmokeBot Privacy Policy
 
-_Last updated: 2024-05-06_
+_Last updated: 12/8/2025_
 
 SmokeBot is a Discord moderation and support assistant developed for deployment by individual server owners. This Privacy Policy explains what limited information the bot processes when it operates in a Discord server, how that information is used, and the choices available to server administrators and members.
 

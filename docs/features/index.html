@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en" class="">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmokeBot - Features</title>
+    <meta
+      name="description"
+      content="Explore SmokeBot features: tickets, snippets, auto replies, giveaways, pins, and moderation tools."
+    />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="icon" href="/assets/logo.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/assets/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/tailwind.css" />
+    <link rel="stylesheet" href="/assets/css/smokebot.css" />
+  </head>
+  <body class="min-h-screen bg-black text-white">
+    <nav class="fixed top-0 left-0 right-0 z-50">
+      <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
+        <div class="flex justify-between items-center w-full">
+          <a
+            href="/index.html#top"
+            class="flex items-center text-xl font-medium text-white hover:text-yellow-400"
+            aria-label="SmokeBot home"
+          >
+            <img
+              src="/assets/logo.png"
+              alt="SmokeBot logo"
+              class="brand-logo"
+            />
+            <span class="sr-only">SmokeBot</span>
+          </a>
+          <div class="hidden md:flex space-x-4">
+            <a
+              href="/features/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Features</a
+            >
+            <a
+              href="/commands/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Commands</a
+            >
+            <a
+              href="/setup/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Setup</a
+            >
+          </div>
+          <button
+            id="mobile-menu-button"
+            class="hover-crt md:hidden border border-white text-white px-3 py-1 text-sm hover:bg-white hover:text-black transition-colors duration-200"
+          >
+            Menu
+          </button>
+        </div>
+      </div>
+      <div
+        id="mobile-menu"
+        class="hidden md:hidden bg-black bg-opacity-95 border-t border-gray-800"
+      >
+        <div class="site-gutter py-2 space-y-1">
+          <a
+            href="/features/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Features</a
+          >
+          <a
+            href="/commands/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Commands</a
+          >
+          <a
+            href="/setup/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Setup</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <main id="top" class="main-content min-h-screen">
+      <section class="retro-section">
+        <div class="section-shell hero-grid">
+          <div class="hero-stack">
+            <div class="hero-badge">Capability deck</div>
+            <h1 class="hero-title font-bold text-white tracking-tight">
+              Everything SmokeBot handles
+            </h1>
+            <p class="hero-subtitle font-mono">
+              Tickets, snippets, auto replies, giveaways, pins, reaction roles,
+              and moderation — all mapped to slash commands.
+            </p>
+            <p class="hero-copy">
+              This page highlights what staff get from each system so you can
+              roll the bot into your server with confidence.
+            </p>
+            <div class="hero-actions">
+              <a class="btn-retro hover-crt" href="/commands/">See commands</a>
+              <a class="btn-retro secondary hover-crt" href="/setup/"
+                >Setup guide</a
+              >
+            </div>
+          </div>
+          <div class="rail">
+            <div class="band">
+              <h3>Support-ready</h3>
+              <p class="text-subtle">
+                Keep channels quiet, route requests fast, and give staff the
+                controls they need without extra clutter.
+              </p>
+            </div>
+            <div class="band">
+              <h3>Slash-first</h3>
+              <p class="text-subtle">
+                Everything critical ships through slash commands and modals;
+                snippets still support prefix triggers for speed.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Features</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">
+              Core systems
+            </h2>
+            <p>High-level tour of the systems inside <code>main.py</code>.</p>
+            <div class="section-divider"></div>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card">
+              <h3>Ticket system</h3>
+              <p>Private threads with category select and staff controls.</p>
+              <ul>
+                <li>Custom categories defined via slash commands.</li>
+                <li>
+                  Ephemeral confirmations; duplicate ticket prevention per user.
+                </li>
+                <li>
+                  Stats, open lists, and persistent close/staff note buttons.
+                </li>
+              </ul>
+            </article>
+            <article class="feature-card">
+              <h3>Snippets + modals</h3>
+              <p>Slash-managed snippets that still fire from a prefix.</p>
+              <ul>
+                <li>
+                  Static/dynamic with placeholders (<code>{1}</code>) and
+                  <code>{ping}</code>.
+                </li>
+                <li>
+                  Default form editor (<code>/editsnippet</code>) for multiline
+                  copy.
+                </li>
+                <li>
+                  Per-guild snippets that stay consistent between restarts.
+                </li>
+              </ul>
+            </article>
+            <article class="feature-card">
+              <h3>Auto replies</h3>
+              <p>Regex or contains matching with smart filters.</p>
+              <ul>
+                <li>
+                  Role/channel allow + deny lists and case sensitivity for
+                  contains.
+                </li>
+                <li>
+                  Cooldown scopes: guild, channel, user, member, role, category,
+                  thread.
+                </li>
+                <li>
+                  Send text responses or hand off to a snippet; migrates older
+                  configs automatically.
+                </li>
+              </ul>
+            </article>
+            <article class="feature-card">
+              <h3>Giveaways</h3>
+              <p>Scheduled giveaways with button entries.</p>
+              <ul>
+                <li>
+                  <code>/giveaway</code> posts an embed with a join button and
+                  optional role requirement.
+                </li>
+                <li>
+                  Winners are selected on schedule with host mentions and entry
+                  counts.
+                </li>
+                <li>
+                  Persistent join view and embed updates survive restarts.
+                </li>
+              </ul>
+            </article>
+            <article class="feature-card">
+              <h3>Pins + reaction roles</h3>
+              <p>Keep key info at the bottom and map reactions to roles.</p>
+              <ul>
+                <li>
+                  <code>/setpin</code> reposts the tracked message to stay at
+                  the bottom.
+                </li>
+                <li>
+                  <code>/reactionrole</code> + removal for emoji-to-role mapping
+                  on any message.
+                </li>
+                <li>
+                  Permission-aware feedback so staff know when Discord blocks
+                  actions.
+                </li>
+              </ul>
+            </article>
+            <article class="feature-card">
+              <h3>Moderation + cleanup</h3>
+              <p>Slash-first moderation with precise filters.</p>
+              <ul>
+                <li>Timeouts, kicks, bans, unbans, slowmode.</li>
+                <li>
+                  <code>/clear</code> filters users, roles, attachments, ranges,
+                  and bot-only cleanup.
+                </li>
+                <li>
+                  Role management including <code>/addroleall</code> with
+                  optional bot exclusion and safe errors.
+                </li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Next</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">
+              Need the commands?
+            </h2>
+            <p>Head to the command cheat sheet or jump straight into setup.</p>
+            <div class="section-divider"></div>
+          </div>
+          <div class="hero-actions">
+            <a class="btn-retro hover-crt" href="/commands/"
+              >Command cheat sheet</a
+            >
+            <a class="btn-retro secondary hover-crt" href="/setup/"
+              >Setup checklist</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="retro-section text-gray-400 py-8 border-t border-gray-800">
+      <div class="site-gutter">
+        <div class="flex flex-col md:flex-row justify-between items-center">
+          <div class="mb-4 md:mb-0">
+            <p class="text-sm">
+              SmokeBot - Discord support & automation toolkit.
+            </p>
+          </div>
+          <div class="flex space-x-6">
+            <a
+              href="#top"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Back to top</a
+            >
+            <a
+              href="/PRIVACY_POLICY.md"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Privacy</a
+            >
+            <a
+              href="/TERMS_OF_SERVICE.md"
+              class="hover-crt text-gray-400 hover:text-white transition-colors"
+              >Terms</a
+            >
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <script src="/assets/js/smokebot.js" defer></script>
+  </body>
+</html>
