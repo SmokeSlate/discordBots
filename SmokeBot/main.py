@@ -1954,10 +1954,19 @@ script_group = app_commands.Group(
 
 async def reject_script_guild(interaction: discord.Interaction) -> bool:
     if not script_guild_allowed(interaction.guild):
-        await interaction.response.send_message(
-            "❌ Script triggers are not enabled for this server.",
-            ephemeral=True,
-        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Script triggers are not enabled for this server.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Script triggers are not enabled for this server.",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
         return True
     return False
 
