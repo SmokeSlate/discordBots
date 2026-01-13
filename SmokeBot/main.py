@@ -1962,11 +1962,72 @@ async def reject_script_guild(interaction: discord.Interaction) -> bool:
     return False
 
 
+class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
+    def __init__(
+        self,
+        *,
+        name: str,
+        pattern: str,
+        match_type: str,
+        enabled: bool,
+        existing: dict,
+    ):
+        super().__init__()
+        self.name = name
+        self.pattern = pattern
+        self.match_type = match_type
+        self.enabled = enabled
+        self.existing = existing
+        self.code = discord.ui.TextInput(
+            label="Python code",
+            style=discord.TextStyle.paragraph,
+            default=(existing.get("code") or "") if existing else "",
+            placeholder="Use send(), reply(), or react() to interact.",
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.code)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
+
+        code_text = str(self.code.value or "").strip()
+        if not code_text:
+            return await interaction.response.send_message("❌ Code cannot be empty.", ephemeral=True)
+
+        if self.match_type == "regex":
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
+
+        gid = str(interaction.guild.id)
+        guild_triggers = script_triggers.setdefault(gid, {})
+        existed = self.name in guild_triggers
+        entry = ensure_script_trigger_defaults(guild_triggers.get(self.name, {}))
+
+        entry.update(
+            {
+                "event": "message",
+                "pattern": self.pattern,
+                "match_type": self.match_type,
+                "code": code_text,
+                "enabled": bool(self.enabled),
+            }
+        )
+
+        guild_triggers[self.name] = ensure_script_trigger_defaults(entry)
+        save_script_triggers()
+
+        action = "updated" if existed else "created"
+        await interaction.response.send_message(f"✅ Script trigger `{self.name}` {action}.", ephemeral=True)
+
+
 @script_group.command(name="set", description="Create or update a script trigger")
 @app_commands.describe(
     name="Name of the script trigger",
     pattern="Text to match in message content",
-    code="Python code to run when matched",
     enabled="Enable or disable this trigger",
 )
 @app_commands.choices(
@@ -1980,7 +2041,6 @@ async def set_script_trigger(
     interaction: discord.Interaction,
     name: str,
     pattern: str,
-    code: str,
     match_type: Optional[app_commands.Choice[str]] = None,
     enabled: Optional[bool] = True,
 ):
@@ -1995,12 +2055,9 @@ async def set_script_trigger(
         return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
     if not pattern:
         return await interaction.response.send_message("❌ Pattern cannot be empty.", ephemeral=True)
-    if not code.strip():
-        return await interaction.response.send_message("❌ Code cannot be empty.", ephemeral=True)
 
     gid = str(interaction.guild.id)
     guild_triggers = script_triggers.setdefault(gid, {})
-    existed = name in guild_triggers
     entry = ensure_script_trigger_defaults(guild_triggers.get(name, {}))
 
     selected_match_type = match_type.value if match_type else str(entry.get("match_type") or "contains")
@@ -2012,21 +2069,14 @@ async def set_script_trigger(
     elif selected_match_type not in {"contains", "exact"}:
         selected_match_type = "contains"
 
-    entry.update(
-        {
-            "event": "message",
-            "pattern": pattern,
-            "match_type": selected_match_type,
-            "code": code,
-            "enabled": bool(enabled),
-        }
+    modal = ScriptTriggerModal(
+        name=name,
+        pattern=pattern,
+        match_type=selected_match_type,
+        enabled=bool(enabled),
+        existing=entry,
     )
-
-    guild_triggers[name] = ensure_script_trigger_defaults(entry)
-    save_script_triggers()
-
-    action = "updated" if existed else "created"
-    await interaction.response.send_message(f"✅ Script trigger `{name}` {action}.", ephemeral=True)
+    await interaction.response.send_modal(modal)
 
 
 @script_group.command(name="remove", description="Remove a script trigger")
@@ -2727,7 +2777,7 @@ async def help_mod(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🧩 Script Triggers",
-        value=(f"{cmd('script set')} <name> <pattern> <code> [match_type] • Create/update\n"
+        value=(f"{cmd('script set')} <name> <pattern> [match_type] • Create/update (opens form)\n"
                f"{cmd('script remove')} <name> • Delete\n"
                f"{cmd('script list')} • List configured scripts"),
         inline=False
