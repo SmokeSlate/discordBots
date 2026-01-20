@@ -11,10 +11,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import builtins
 import json
 import os
 import random
 import re
+import traceback
 from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 
@@ -67,6 +69,10 @@ snippets = {}  # unified format after migration
 auto_replies = {}
 autoreply_cooldowns = {}
 giveaways = {}
+script_triggers = {}
+
+ALLOWED_SCRIPT_GUILDS = {1385295315245989999}
+TRUSTED_SCRIPT_USER_ID = 823654955025956895
 
 # =====================================================
 # Permissions Checkers
@@ -832,6 +838,287 @@ async def dispatch_auto_reply(
     return True
 
 # =====================================================
+# Script Triggers (Python snippets)
+# =====================================================
+
+
+def ensure_script_trigger_defaults(entry: dict) -> dict:
+    entry.setdefault("event", "message")
+    entry.setdefault("pattern", "")
+    entry.setdefault("match_type", "contains")
+    entry.setdefault("code", "")
+    entry.setdefault("enabled", True)
+    return entry
+
+
+def load_script_triggers():
+    global script_triggers
+    raw = read_json("script_triggers.json", {})
+    migrated = False
+
+    for guild_id, triggers in list(raw.items()):
+        if not isinstance(triggers, dict):
+            raw[guild_id] = {}
+            migrated = True
+            continue
+
+        for name, entry in list(triggers.items()):
+            if not isinstance(entry, dict):
+                raw[guild_id][name] = ensure_script_trigger_defaults({
+                    "pattern": str(name),
+                    "code": str(entry),
+                })
+                migrated = True
+                continue
+
+            before = dict(entry)
+            raw[guild_id][name] = ensure_script_trigger_defaults(entry)
+            match_type = str(raw[guild_id][name].get("match_type") or "contains").lower()
+            if match_type not in {"regex", "contains", "exact"}:
+                raw[guild_id][name]["match_type"] = "contains"
+                migrated = True
+            if raw[guild_id][name] != before:
+                migrated = True
+
+    if migrated:
+        write_json("script_triggers.json", raw)
+
+    script_triggers = raw
+
+
+def save_script_triggers():
+    write_json("script_triggers.json", script_triggers)
+
+
+def script_guild_allowed(guild: Optional[discord.Guild]) -> bool:
+    return guild is not None and guild.id in ALLOWED_SCRIPT_GUILDS
+
+
+def message_trigger_match(entry: dict, message: discord.Message) -> Optional[re.Match]:
+    pattern = str(entry.get("pattern") or "")
+    if not pattern:
+        return None
+
+    match_type = str(entry.get("match_type") or "contains").lower()
+    if match_type == "exact":
+        return re.match(r"^.*$", message.content) if message.content == pattern else None
+
+    if match_type == "contains":
+        return re.match(r"^.*$", message.content) if pattern in message.content else None
+
+    try:
+        return re.search(pattern, message.content)
+    except re.error:
+        return None
+
+
+async def run_script_trigger(
+    message: discord.Message,
+    name: str,
+    entry: dict,
+    match: Optional[re.Match],
+) -> bool:
+    if not message.guild or not entry.get("enabled", True):
+        return False
+
+    code = str(entry.get("code") or "").strip()
+    if not code:
+        return False
+
+    async def _send_async(content: str, channel_id: Optional[int] = None):
+        target = message.channel
+        if channel_id and message.guild:
+            target = message.guild.get_channel(channel_id)
+            if target is None:
+                try:
+                    target = await bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    return None
+        try:
+            return await target.send(str(content))
+        except discord.HTTPException:
+            return None
+
+    async def _reply_async(content: str):
+        try:
+            return await message.reply(str(content), mention_author=False)
+        except discord.HTTPException:
+            return None
+
+    async def _react_async(emoji: str):
+        try:
+            return await message.add_reaction(emoji)
+        except discord.HTTPException:
+            return None
+
+    async def _send_embed_async(
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        *,
+        color: Optional[int] = None,
+        channel_id: Optional[int] = None,
+        fields: Optional[List[Tuple[str, str, bool]]] = None,
+        footer: Optional[str] = None,
+    ):
+        target = message.channel
+        if channel_id and message.guild:
+            target = message.guild.get_channel(channel_id)
+            if target is None:
+                try:
+                    target = await bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    return None
+        embed_color = discord.Color(color) if isinstance(color, int) else None
+        embed = discord.Embed(title=title or None, description=description or None, color=embed_color)
+        if fields:
+            for field_name, field_value, inline in fields:
+                embed.add_field(name=str(field_name), value=str(field_value), inline=bool(inline))
+        if footer:
+            embed.set_footer(text=str(footer))
+        try:
+            return await target.send(embed=embed)
+        except discord.HTTPException:
+            return None
+
+    async def _dm_async(user_id: int, content: str):
+        try:
+            user = await bot.fetch_user(int(user_id))
+        except (discord.NotFound, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await user.send(str(content))
+        except discord.HTTPException:
+            return None
+
+    async def _edit_message_async(message_id: int, content: Optional[str] = None):
+        try:
+            target_message = await message.channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await target_message.edit(content=str(content) if content is not None else None)
+        except discord.HTTPException:
+            return None
+
+    async def _delete_message_async(message_id: Optional[int] = None):
+        target_id = message_id or message.id
+        try:
+            target_message = await message.channel.fetch_message(int(target_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+        try:
+            return await target_message.delete()
+        except discord.HTTPException:
+            return None
+
+    def _schedule(coro):
+        return asyncio.create_task(coro)
+
+    def send(content: str, channel_id: Optional[int] = None):
+        return _schedule(_send_async(content, channel_id))
+
+    def reply(content: str):
+        return _schedule(_reply_async(content))
+
+    def react(emoji: str):
+        return _schedule(_react_async(emoji))
+
+    def send_embed(
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        *,
+        color: Optional[int] = None,
+        channel_id: Optional[int] = None,
+        fields: Optional[List[Tuple[str, str, bool]]] = None,
+        footer: Optional[str] = None,
+    ):
+        return _schedule(_send_embed_async(
+            title,
+            description,
+            color=color,
+            channel_id=channel_id,
+            fields=fields,
+            footer=footer,
+        ))
+
+    def dm(user_id: int, content: str):
+        return _schedule(_dm_async(user_id, content))
+
+    def edit_message(message_id: int, content: Optional[str] = None):
+        return _schedule(_edit_message_async(message_id, content))
+
+    def delete_message(message_id: Optional[int] = None):
+        return _schedule(_delete_message_async(message_id))
+
+    safe_builtins = {
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "len": len,
+        "range": range,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "sorted": sorted,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+        "print": print,
+    }
+
+    is_trusted_user = message.author.id == TRUSTED_SCRIPT_USER_ID
+    builtins_scope = builtins.__dict__ if is_trusted_user else safe_builtins
+
+    globals_dict = {
+        "__builtins__": builtins_scope,
+        "send": send,
+        "reply": reply,
+        "react": react,
+        "send_embed": send_embed,
+        "dm": dm,
+        "edit_message": edit_message,
+        "delete_message": delete_message,
+        "message": message,
+        "author": message.author,
+        "channel": message.channel,
+        "guild": message.guild,
+        "content": message.content,
+        "match": match,
+        "random": random,
+        "re": re,
+        "asyncio": asyncio,
+    }
+
+    if is_trusted_user:
+        globals_dict.update(
+            {
+                "bot": bot,
+                "discord": discord,
+                "os": os,
+                "datetime": datetime,
+                "timedelta": timedelta,
+            }
+        )
+
+    locals_dict: Dict[str, object] = {}
+
+    try:
+        exec(code, globals_dict, locals_dict)
+    except Exception as exc:
+        print(f"Error running script trigger '{name}' in guild {message.guild.id}:")
+        traceback.print_exc()
+        try:
+            error_text = f"⚠️ Script error in `{name}`: {exc}"
+            await message.channel.send(error_text[:1900])
+        except discord.HTTPException:
+            pass
+        return False
+
+    return True
+
+# =====================================================
 # Ticket Categories (Customizable)
 # =====================================================
 
@@ -888,6 +1175,7 @@ async def on_ready():
     load_snippets()
     load_auto_replies()
     load_giveaways()
+    load_script_triggers()
 
     for message_id, data in list(giveaways.items()):
         if data.get("ended"):
@@ -1767,64 +2055,366 @@ async def autoreply_options(
 
 bot.tree.add_command(autoreply_group)
 
+# =====================================================
+# Script Trigger Commands
+# =====================================================
+
+script_group = app_commands.Group(
+    name="script",
+    description="Manage Python script triggers",
+)
+
+
+async def reject_script_guild(interaction: discord.Interaction) -> bool:
+    if not script_guild_allowed(interaction.guild):
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Script triggers are not enabled for this server.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Script triggers are not enabled for this server.",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
+        return True
+    return False
+
+
+class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
+    def __init__(
+        self,
+        *,
+        name: str,
+        pattern: str,
+        match_type: str,
+        enabled: bool,
+        existing: dict,
+    ):
+        super().__init__()
+        self.name = name
+        self.pattern = pattern
+        self.match_type = match_type
+        self.enabled = enabled
+        self.existing = existing
+        self.code = discord.ui.TextInput(
+            label="Python code",
+            style=discord.TextStyle.paragraph,
+            default=(existing.get("code") or "") if existing else "",
+            placeholder="Use send(), reply(), or react() to interact.",
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.code)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
+
+        code_text = str(self.code.value or "").strip()
+        if not code_text:
+            return await interaction.response.send_message("❌ Code cannot be empty.", ephemeral=True)
+
+        if self.match_type == "regex":
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
+
+        gid = str(interaction.guild.id)
+        guild_triggers = script_triggers.setdefault(gid, {})
+        existed = self.name in guild_triggers
+        entry = ensure_script_trigger_defaults(guild_triggers.get(self.name, {}))
+
+        entry.update(
+            {
+                "event": "message",
+                "pattern": self.pattern,
+                "match_type": self.match_type,
+                "code": code_text,
+                "enabled": bool(self.enabled),
+            }
+        )
+
+        guild_triggers[self.name] = ensure_script_trigger_defaults(entry)
+        save_script_triggers()
+
+        action = "updated" if existed else "created"
+        await interaction.response.send_message(f"✅ Script trigger `{self.name}` {action}.", ephemeral=True)
+
+
+@script_group.command(name="set", description="Create or update a script trigger")
+@app_commands.describe(
+    name="Name of the script trigger",
+    pattern="Text to match in message content",
+    enabled="Enable or disable this trigger",
+)
+@app_commands.choices(
+    match_type=[
+        app_commands.Choice(name="Contains", value="contains"),
+        app_commands.Choice(name="Regex", value="regex"),
+        app_commands.Choice(name="Exact", value="exact"),
+    ]
+)
+async def set_script_trigger(
+    interaction: discord.Interaction,
+    name: str,
+    pattern: str,
+    match_type: Optional[app_commands.Choice[str]] = None,
+    enabled: Optional[bool] = True,
+):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    pattern = pattern.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+    if not pattern:
+        return await interaction.response.send_message("❌ Pattern cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.setdefault(gid, {})
+    entry = ensure_script_trigger_defaults(guild_triggers.get(name, {}))
+
+    selected_match_type = match_type.value if match_type else str(entry.get("match_type") or "contains")
+    if selected_match_type == "regex":
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return await interaction.response.send_message(f"❌ Invalid regex: {exc}", ephemeral=True)
+    elif selected_match_type not in {"contains", "exact"}:
+        selected_match_type = "contains"
+
+    modal = ScriptTriggerModal(
+        name=name,
+        pattern=pattern,
+        match_type=selected_match_type,
+        enabled=bool(enabled),
+        existing=entry,
+    )
+    await interaction.response.send_modal(modal)
+
+
+@script_group.command(name="remove", description="Remove a script trigger")
+@app_commands.describe(name="Name of the script trigger to remove")
+async def remove_script_trigger(interaction: discord.Interaction, name: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    if name in guild_triggers:
+        del guild_triggers[name]
+        save_script_triggers()
+        return await interaction.response.send_message(f"✅ Script trigger `{name}` removed.", ephemeral=True)
+
+    await interaction.response.send_message("❌ Script trigger not found.", ephemeral=True)
+
+
+@script_group.command(name="list", description="List script triggers for this server")
+async def list_script_triggers(interaction: discord.Interaction):
+    if await reject_script_guild(interaction):
+        return
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid)
+
+    if not guild_triggers:
+        return await interaction.response.send_message("No script triggers configured.", ephemeral=True)
+
+    embed = discord.Embed(title="🧩 Script Triggers", color=discord.Color.dark_teal())
+    for name, entry in guild_triggers.items():
+        pattern = entry.get("pattern") or "(no pattern)"
+        match_type = str(entry.get("match_type") or "contains").title()
+        enabled = "Enabled" if entry.get("enabled", True) else "Disabled"
+        preview = (entry.get("code") or "").strip().replace("\n", " ")[:80]
+        summary = f"{enabled} • Match: {match_type} • `{pattern}`"
+        if preview:
+            summary += f"\nCode: {preview}..."
+        embed.add_field(name=name, value=summary, inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@script_group.command(name="enable", description="Enable a script trigger")
+@app_commands.describe(name="Name of the script trigger to enable")
+async def enable_script_trigger(interaction: discord.Interaction, name: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    entry = guild_triggers.get(name)
+    if not entry:
+        return await interaction.response.send_message("❌ Script trigger not found.", ephemeral=True)
+
+    entry["enabled"] = True
+    guild_triggers[name] = ensure_script_trigger_defaults(entry)
+    save_script_triggers()
+    await interaction.response.send_message(f"✅ Script trigger `{name}` enabled.", ephemeral=True)
+
+
+@script_group.command(name="disable", description="Disable a script trigger")
+@app_commands.describe(name="Name of the script trigger to disable")
+async def disable_script_trigger(interaction: discord.Interaction, name: str):
+    if not has_permissions_or_override(interaction):
+        return await interaction.response.send_message("❌ No permission.", ephemeral=True)
+    if await reject_script_guild(interaction):
+        return
+
+    name = name.strip()
+    if not name:
+        return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
+
+    gid = str(interaction.guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    entry = guild_triggers.get(name)
+    if not entry:
+        return await interaction.response.send_message("❌ Script trigger not found.", ephemeral=True)
+
+    entry["enabled"] = False
+    guild_triggers[name] = ensure_script_trigger_defaults(entry)
+    save_script_triggers()
+    await interaction.response.send_message(f"✅ Script trigger `{name}` disabled.", ephemeral=True)
+
+
+@script_group.command(name="docs", description="Show script helper documentation")
+async def script_docs(interaction: discord.Interaction):
+    if await reject_script_guild(interaction):
+        return
+
+    embed = discord.Embed(
+        title="🧩 Script Trigger Helpers",
+        description="Helpers available inside script code.",
+        color=discord.Color.dark_teal(),
+    )
+    embed.add_field(
+        name="Message helpers",
+        value=(
+            "`send(content, channel_id=None)` • Send a message\n"
+            "`reply(content)` • Reply to the trigger message\n"
+            "`react(emoji)` • Add a reaction\n"
+            "`send_embed(title, description, color=None, channel_id=None, fields=None, footer=None)` • Send an embed\n"
+            "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
+            "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
+            "`dm(user_id, content)` • DM a user"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Context variables",
+        value=(
+            "`message` • Trigger message\n"
+            "`author` • Message author\n"
+            "`channel` • Message channel\n"
+            "`guild` • Message guild\n"
+            "`content` • Message content\n"
+            "`match` • Regex match (if used)\n"
+            "`random`, `re`, `asyncio` • Utility modules"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Trusted user override",
+        value=(
+            f"User ID `{TRUSTED_SCRIPT_USER_ID}` runs with full Python builtins and extra modules: "
+            "`bot`, `discord`, `os`, `datetime`, `timedelta`."
+        ),
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+bot.tree.add_command(script_group)
+
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
+    is_bot_message = message.author.bot
+    is_self_message = bot.user and message.author.id == bot.user.id
 
     # Pinned message reposting
-    await handle_pin_repost(message)
+    if not is_bot_message:
+        await handle_pin_repost(message)
 
     if message.guild:
         gid = str(message.guild.id)
-        guild_snippets = snippets.get(gid, {})
+        if not is_bot_message:
+            guild_snippets = snippets.get(gid, {})
 
-        if message.content.startswith("!"):
-            parts = message.content.split()
-            if parts:
-                trigger = parts[0][1:]
-                entry = guild_snippets.get(trigger)
-                if entry:
-                    args = parts[1:] if entry.get("dynamic") else []
-                    handled = await dispatch_snippet(
-                        message,
-                        trigger,
-                        entry,
-                        args,
-                        delete_trigger=True,
-                    )
-                    if handled:
-                        return
+            if message.content.startswith("!"):
+                parts = message.content.split()
+                if parts:
+                    trigger = parts[0][1:]
+                    entry = guild_snippets.get(trigger)
+                    if entry:
+                        args = parts[1:] if entry.get("dynamic") else []
+                        handled = await dispatch_snippet(
+                            message,
+                            trigger,
+                            entry,
+                            args,
+                            delete_trigger=True,
+                        )
+                        if handled:
+                            return
 
-        guild_replies = auto_replies.get(gid, {})
-        for name, entry in guild_replies.items():
-            pattern = entry.get("pattern")
-            if not pattern:
-                continue
-
-            match_type = str(entry.get("match_type") or "regex").lower()
-            match: Optional[re.Match]
-
-            if match_type == "contains":
-                case_sensitive = bool(entry.get("case_sensitive"))
-                haystack = message.content if case_sensitive else message.content.lower()
-                needle = pattern if case_sensitive else pattern.lower()
-                if needle not in haystack:
-                    continue
-                match = None
-            else:
-                try:
-                    match = re.search(pattern, message.content)
-                except re.error:
+            guild_replies = auto_replies.get(gid, {})
+            for name, entry in guild_replies.items():
+                pattern = entry.get("pattern")
+                if not pattern:
                     continue
 
+                match_type = str(entry.get("match_type") or "regex").lower()
+                match: Optional[re.Match]
+
+                if match_type == "contains":
+                    case_sensitive = bool(entry.get("case_sensitive"))
+                    haystack = message.content if case_sensitive else message.content.lower()
+                    needle = pattern if case_sensitive else pattern.lower()
+                    if needle not in haystack:
+                        continue
+                    match = None
+                else:
+                    try:
+                        match = re.search(pattern, message.content)
+                    except re.error:
+                        continue
+
+                    if not match:
+                        continue
+
+                handled = await dispatch_auto_reply(message, name, entry, match)
+                if handled:
+                    return
+
+        if script_guild_allowed(message.guild) and not is_self_message:
+            guild_triggers = script_triggers.get(gid, {})
+            for name, entry in guild_triggers.items():
+                if entry.get("event") != "message":
+                    continue
+                match = message_trigger_match(entry, message)
                 if not match:
                     continue
-
-            handled = await dispatch_auto_reply(message, name, entry, match)
-            if handled:
-                return
+                await run_script_trigger(message, name, entry, match)
 
     # Keep slash commands and prefixed commands working
     await bot.process_commands(message)
@@ -2402,6 +2992,16 @@ async def help_mod(interaction: discord.Interaction):
                f"{cmd('autoreply remove')} <name> • Delete\n"
                f"{cmd('autoreply list')} • List configured replies\n"
                f"{cmd('autoreply options')} <name> [filters/cooldown] • Configure filters"),
+        inline=False
+    )
+    embed.add_field(
+        name="🧩 Script Triggers",
+        value=(f"{cmd('script set')} <name> <pattern> [match_type] • Create/update (opens form)\n"
+               f"{cmd('script remove')} <name> • Delete\n"
+               f"{cmd('script list')} • List configured scripts\n"
+               f"{cmd('script enable')} <name> • Enable a script\n"
+               f"{cmd('script disable')} <name> • Disable a script\n"
+               f"{cmd('script docs')} • Helper documentation"),
         inline=False
     )
     embed.add_field(
