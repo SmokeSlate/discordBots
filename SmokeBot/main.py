@@ -2349,6 +2349,7 @@ bot.tree.add_command(script_group)
 @bot.event
 async def on_message(message):
     is_bot_message = message.author.bot
+    is_self_message = bot.user and message.author.id == bot.user.id
 
     # Pinned message reposting
     if not is_bot_message:
@@ -2405,17 +2406,7 @@ async def on_message(message):
                 if handled:
                     return
 
-        if script_guild_allowed(message.guild):
-            guild_triggers = script_triggers.get(gid, {})
-            for name, entry in guild_triggers.items():
-                if entry.get("event") != "message":
-                    continue
-                match = message_trigger_match(entry, message)
-                if not match:
-                    continue
-                await run_script_trigger(message, name, entry, match)
-
-        if script_guild_allowed(message.guild):
+        if script_guild_allowed(message.guild) and not is_self_message:
             guild_triggers = script_triggers.get(gid, {})
             for name, entry in guild_triggers.items():
                 if entry.get("event") != "message":
