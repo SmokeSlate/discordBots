@@ -2348,61 +2348,72 @@ bot.tree.add_command(script_group)
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
+    is_bot_message = message.author.bot
 
     # Pinned message reposting
-    await handle_pin_repost(message)
+    if not is_bot_message:
+        await handle_pin_repost(message)
 
     if message.guild:
         gid = str(message.guild.id)
-        guild_snippets = snippets.get(gid, {})
+        if not is_bot_message:
+            guild_snippets = snippets.get(gid, {})
 
-        if message.content.startswith("!"):
-            parts = message.content.split()
-            if parts:
-                trigger = parts[0][1:]
-                entry = guild_snippets.get(trigger)
-                if entry:
-                    args = parts[1:] if entry.get("dynamic") else []
-                    handled = await dispatch_snippet(
-                        message,
-                        trigger,
-                        entry,
-                        args,
-                        delete_trigger=True,
-                    )
-                    if handled:
-                        return
+            if message.content.startswith("!"):
+                parts = message.content.split()
+                if parts:
+                    trigger = parts[0][1:]
+                    entry = guild_snippets.get(trigger)
+                    if entry:
+                        args = parts[1:] if entry.get("dynamic") else []
+                        handled = await dispatch_snippet(
+                            message,
+                            trigger,
+                            entry,
+                            args,
+                            delete_trigger=True,
+                        )
+                        if handled:
+                            return
 
-        guild_replies = auto_replies.get(gid, {})
-        for name, entry in guild_replies.items():
-            pattern = entry.get("pattern")
-            if not pattern:
-                continue
-
-            match_type = str(entry.get("match_type") or "regex").lower()
-            match: Optional[re.Match]
-
-            if match_type == "contains":
-                case_sensitive = bool(entry.get("case_sensitive"))
-                haystack = message.content if case_sensitive else message.content.lower()
-                needle = pattern if case_sensitive else pattern.lower()
-                if needle not in haystack:
-                    continue
-                match = None
-            else:
-                try:
-                    match = re.search(pattern, message.content)
-                except re.error:
+            guild_replies = auto_replies.get(gid, {})
+            for name, entry in guild_replies.items():
+                pattern = entry.get("pattern")
+                if not pattern:
                     continue
 
+                match_type = str(entry.get("match_type") or "regex").lower()
+                match: Optional[re.Match]
+
+                if match_type == "contains":
+                    case_sensitive = bool(entry.get("case_sensitive"))
+                    haystack = message.content if case_sensitive else message.content.lower()
+                    needle = pattern if case_sensitive else pattern.lower()
+                    if needle not in haystack:
+                        continue
+                    match = None
+                else:
+                    try:
+                        match = re.search(pattern, message.content)
+                    except re.error:
+                        continue
+
+                    if not match:
+                        continue
+
+                handled = await dispatch_auto_reply(message, name, entry, match)
+                if handled:
+                    return
+
+        if script_guild_allowed(message.guild):
+            guild_triggers = script_triggers.get(gid, {})
+            for name, entry in guild_triggers.items():
+                if entry.get("event") != "message":
+                    continue
+                match = message_trigger_match(entry, message)
                 if not match:
                     continue
-
-            handled = await dispatch_auto_reply(message, name, entry, match)
-            if handled:
-                return
+                await run_script_trigger(message, name, entry, match)
 
         if script_guild_allowed(message.guild):
             guild_triggers = script_triggers.get(gid, {})
