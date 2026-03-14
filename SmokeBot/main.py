@@ -846,6 +846,7 @@ def ensure_script_trigger_defaults(entry: dict) -> dict:
     entry.setdefault("event", "message")
     entry.setdefault("pattern", "")
     entry.setdefault("match_type", "contains")
+    entry.setdefault("channel_ids", [])
     entry.setdefault("code", "")
     entry.setdefault("enabled", True)
     return entry
@@ -877,6 +878,24 @@ def load_script_triggers():
             if match_type not in {"regex", "contains", "exact"}:
                 raw[guild_id][name]["match_type"] = "contains"
                 migrated = True
+            event_name = str(raw[guild_id][name].get("event") or "message").lower()
+            if event_name not in {"message", "message_all", "reply", "reaction_add", "reaction_remove", "member_join", "member_leave"}:
+                raw[guild_id][name]["event"] = "message"
+                migrated = True
+            channel_ids = raw[guild_id][name].get("channel_ids", [])
+            if not isinstance(channel_ids, list):
+                raw[guild_id][name]["channel_ids"] = []
+                migrated = True
+            else:
+                normalized_channels = []
+                for channel_id in channel_ids:
+                    try:
+                        normalized_channels.append(int(channel_id))
+                    except (TypeError, ValueError):
+                        continue
+                if normalized_channels != channel_ids:
+                    raw[guild_id][name]["channel_ids"] = normalized_channels
+                    migrated = True
             if raw[guild_id][name] != before:
                 migrated = True
 
@@ -912,40 +931,115 @@ def message_trigger_match(entry: dict, message: discord.Message) -> Optional[re.
         return None
 
 
+def trigger_match_text(entry: dict, text: str) -> Optional[re.Match]:
+    pattern = str(entry.get("pattern") or "")
+    if not pattern:
+        return None
+
+    match_type = str(entry.get("match_type") or "contains").lower()
+    if match_type == "exact":
+        return re.match(r"^.*$", text) if text == pattern else None
+
+    if match_type == "contains":
+        return re.match(r"^.*$", text) if pattern in text else None
+
+    try:
+        return re.search(pattern, text)
+    except re.error:
+        return None
+
+
+def script_entry_channel_allowed(entry: dict, channel_id: Optional[int]) -> bool:
+    allowed = entry.get("channel_ids") or []
+    if not allowed:
+        return True
+    if channel_id is None:
+        return False
+    try:
+        return int(channel_id) in {int(cid) for cid in allowed}
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_script_channel_ids(raw: Optional[str], guild: discord.Guild) -> List[int]:
+    if not raw:
+        return []
+
+    text = str(raw).strip()
+    if not text or text.lower() in {"all", "*", "none", "clear", "reset"}:
+        return []
+
+    channel_ids: List[int] = []
+    for token in [part.strip() for part in text.split(",") if part.strip()]:
+        match = re.search(r"\d+", token)
+        if not match:
+            continue
+        channel_id = int(match.group(0))
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            continue
+        channel_ids.append(channel_id)
+
+    deduped = []
+    seen = set()
+    for channel_id in channel_ids:
+        if channel_id in seen:
+            continue
+        deduped.append(channel_id)
+        seen.add(channel_id)
+    return deduped
+
+
 async def run_script_trigger(
-    message: discord.Message,
     name: str,
     entry: dict,
-    match: Optional[re.Match],
+    *,
+    guild: discord.Guild,
+    match: Optional[re.Match] = None,
+    event_name: str = "message",
+    message: Optional[discord.Message] = None,
+    reaction: Optional[discord.Reaction] = None,
+    user: Optional[discord.abc.User] = None,
+    member: Optional[discord.Member] = None,
 ) -> bool:
-    if not message.guild or not entry.get("enabled", True):
+    if not guild or not entry.get("enabled", True):
         return False
 
     code = str(entry.get("code") or "").strip()
     if not code:
         return False
 
+    source_channel = message.channel if message else (reaction.message.channel if reaction else None)
+    source_author = message.author if message else user
+    source_content = message.content if message else ""
+
     async def _send_async(content: str, channel_id: Optional[int] = None):
-        target = message.channel
-        if channel_id and message.guild:
-            target = message.guild.get_channel(channel_id)
+        target = source_channel
+        if channel_id:
+            target = guild.get_channel(channel_id)
             if target is None:
                 try:
                     target = await bot.fetch_channel(channel_id)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     return None
+        if target is None:
+            return None
         try:
             return await target.send(str(content))
         except discord.HTTPException:
             return None
 
     async def _reply_async(content: str):
+        if not message:
+            return None
         try:
             return await message.reply(str(content), mention_author=False)
         except discord.HTTPException:
             return None
 
     async def _react_async(emoji: str):
+        if not message:
+            return None
         try:
             return await message.add_reaction(emoji)
         except discord.HTTPException:
@@ -960,14 +1054,16 @@ async def run_script_trigger(
         fields: Optional[List[Tuple[str, str, bool]]] = None,
         footer: Optional[str] = None,
     ):
-        target = message.channel
-        if channel_id and message.guild:
-            target = message.guild.get_channel(channel_id)
+        target = source_channel
+        if channel_id:
+            target = guild.get_channel(channel_id)
             if target is None:
                 try:
                     target = await bot.fetch_channel(channel_id)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     return None
+        if target is None:
+            return None
         embed_color = discord.Color(color) if isinstance(color, int) else None
         embed = discord.Embed(title=title or None, description=description or None, color=embed_color)
         if fields:
@@ -991,8 +1087,10 @@ async def run_script_trigger(
             return None
 
     async def _edit_message_async(message_id: int, content: Optional[str] = None):
+        if not source_channel:
+            return None
         try:
-            target_message = await message.channel.fetch_message(int(message_id))
+            target_message = await source_channel.fetch_message(int(message_id))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
             return None
         try:
@@ -1001,13 +1099,266 @@ async def run_script_trigger(
             return None
 
     async def _delete_message_async(message_id: Optional[int] = None):
-        target_id = message_id or message.id
+        if not source_channel:
+            return None
+        target_id = message_id or (message.id if message else None)
+        if target_id is None:
+            return None
         try:
-            target_message = await message.channel.fetch_message(int(target_id))
+            target_message = await source_channel.fetch_message(int(target_id))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
             return None
         try:
             return await target_message.delete()
+        except discord.HTTPException:
+            return None
+
+    async def _kick_member_async(member_id: int, reason: str = "No reason provided"):
+        if not guild:
+            return None
+        try:
+            member = guild.get_member(int(member_id))
+        except (TypeError, ValueError):
+            return None
+        if not member:
+            return None
+        try:
+            await member.kick(reason=str(reason))
+            return member
+        except discord.HTTPException:
+            return None
+
+    async def _ban_member_async(
+        user_id: int,
+        reason: str = "No reason provided",
+        delete_message_seconds: int = 0,
+    ):
+        if not guild:
+            return None
+
+        try:
+            user_id_int = int(user_id)
+        except (TypeError, ValueError):
+            return None
+
+        target = guild.get_member(user_id_int)
+        if target is None:
+            try:
+                target = await bot.fetch_user(user_id_int)
+            except (discord.NotFound, discord.HTTPException):
+                return None
+
+        delete_seconds = max(0, min(int(delete_message_seconds), 604800))
+
+        try:
+            await guild.ban(
+                target,
+                reason=str(reason),
+                delete_message_seconds=delete_seconds,
+            )
+            return target
+        except (discord.HTTPException, ValueError):
+            return None
+
+    async def _unban_user_async(user_id: int, reason: str = "No reason provided"):
+        if not guild:
+            return None
+        try:
+            user = await bot.fetch_user(int(user_id))
+        except (discord.NotFound, discord.HTTPException, ValueError):
+            return None
+        try:
+            await guild.unban(user, reason=str(reason))
+            return user
+        except discord.HTTPException:
+            return None
+
+    async def _timeout_member_async(member_id: int, minutes: int, reason: str = "No reason provided"):
+        if not guild:
+            return None
+        try:
+            member = guild.get_member(int(member_id))
+            minutes_int = int(minutes)
+        except (TypeError, ValueError):
+            return None
+        if not member:
+            return None
+
+        if minutes_int <= 0:
+            until = None
+        else:
+            until = datetime.utcnow() + timedelta(minutes=minutes_int)
+
+        try:
+            await member.timeout(until, reason=str(reason))
+            return member
+        except discord.HTTPException:
+            return None
+
+    async def _clear_messages_async(
+        amount: int,
+        from_user_id: Optional[int] = None,
+        contains: Optional[str] = None,
+        starts_after: Optional[int] = None,
+        ends_before: Optional[int] = None,
+        include_bots: bool = True,
+        only_bots: bool = False,
+        attachments_only: bool = False,
+        role_id: Optional[int] = None,
+        scan_limit: Optional[int] = None,
+    ):
+        if not guild or not source_channel:
+            return []
+
+        try:
+            amount_int = int(amount)
+        except (TypeError, ValueError):
+            return []
+        if amount_int <= 0:
+            return []
+
+        before_msg = None
+        after_msg = None
+
+        try:
+            if ends_before is not None:
+                before_msg = await source_channel.fetch_message(int(ends_before))
+            if starts_after is not None:
+                after_msg = await source_channel.fetch_message(int(starts_after))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError, TypeError):
+            return []
+
+        if scan_limit is None:
+            scan_limit_int = min(max(amount_int * 10, amount_int), 5000)
+        else:
+            try:
+                scan_limit_int = max(1, min(int(scan_limit), 5000))
+            except (TypeError, ValueError):
+                scan_limit_int = min(max(amount_int * 10, amount_int), 5000)
+
+        contains_lower = str(contains).lower() if contains is not None else None
+        target_user_id = int(from_user_id) if from_user_id is not None else None
+        role = guild.get_role(int(role_id)) if role_id is not None else None
+        counter = {"n": 0}
+
+        def check(m: discord.Message) -> bool:
+            if m.pinned:
+                return False
+            if only_bots and not m.author.bot:
+                return False
+            if not only_bots and not include_bots and m.author.bot:
+                return False
+            if target_user_id is not None and m.author.id != target_user_id:
+                return False
+            if role:
+                member = guild.get_member(m.author.id)
+                if not member or role not in member.roles:
+                    return False
+            if attachments_only and len(m.attachments) == 0:
+                return False
+            if contains_lower and contains_lower not in (m.content or "").lower():
+                return False
+            if counter["n"] >= amount_int:
+                return False
+            counter["n"] += 1
+            return True
+
+        try:
+            return await source_channel.purge(
+                limit=scan_limit_int,
+                check=check,
+                before=before_msg,
+                after=after_msg,
+                bulk=True,
+            )
+        except discord.HTTPException:
+            return []
+
+    async def _search_messages_async(
+        query: Optional[str] = None,
+        *,
+        limit: int = 50,
+        from_user_id: Optional[int] = None,
+        include_bots: bool = True,
+        attachments_only: bool = False,
+    ) -> List[dict]:
+        if not guild or not source_channel:
+            return []
+
+        try:
+            limit_int = max(1, min(int(limit), 200))
+        except (TypeError, ValueError):
+            limit_int = 50
+
+        query_lower = str(query).lower() if query else None
+        target_user_id = int(from_user_id) if from_user_id is not None else None
+        results: List[dict] = []
+
+        try:
+            async for item in source_channel.history(limit=limit_int):
+                if target_user_id is not None and item.author.id != target_user_id:
+                    continue
+                if not include_bots and item.author.bot:
+                    continue
+                if attachments_only and not item.attachments:
+                    continue
+                if query_lower and query_lower not in (item.content or "").lower():
+                    continue
+
+                results.append(
+                    {
+                        "id": item.id,
+                        "author_id": item.author.id,
+                        "author_name": str(item.author),
+                        "content": item.content,
+                        "created_at": item.created_at.isoformat(),
+                        "jump_url": item.jump_url,
+                        "attachment_count": len(item.attachments),
+                    }
+                )
+        except discord.HTTPException:
+            return results
+
+        return results
+
+    async def _set_slowmode_async(seconds: int, reason: str = "No reason provided"):
+        try:
+            seconds_int = max(0, min(int(seconds), 21600))
+        except (TypeError, ValueError):
+            return None
+        try:
+            if not source_channel:
+                return None
+            await source_channel.edit(slowmode_delay=seconds_int, reason=str(reason))
+            return seconds_int
+        except discord.HTTPException:
+            return None
+
+    async def _add_role_async(member_id: int, role_id: int, reason: str = "No reason provided"):
+        try:
+            target_member = guild.get_member(int(member_id))
+            target_role = guild.get_role(int(role_id))
+        except (TypeError, ValueError):
+            return None
+        if not target_member or not target_role:
+            return None
+        try:
+            await target_member.add_roles(target_role, reason=str(reason))
+            return target_member
+        except discord.HTTPException:
+            return None
+
+    async def _remove_role_async(member_id: int, role_id: int, reason: str = "No reason provided"):
+        try:
+            target_member = guild.get_member(int(member_id))
+            target_role = guild.get_role(int(role_id))
+        except (TypeError, ValueError):
+            return None
+        if not target_member or not target_role:
+            return None
+        try:
+            await target_member.remove_roles(target_role, reason=str(reason))
+            return target_member
         except discord.HTTPException:
             return None
 
@@ -1050,6 +1401,76 @@ async def run_script_trigger(
     def delete_message(message_id: Optional[int] = None):
         return _schedule(_delete_message_async(message_id))
 
+    def kick_member(member_id: int, reason: str = "No reason provided"):
+        return _schedule(_kick_member_async(member_id, reason))
+
+    def ban_member(
+        user_id: int,
+        reason: str = "No reason provided",
+        delete_message_seconds: int = 0,
+    ):
+        return _schedule(_ban_member_async(user_id, reason, delete_message_seconds))
+
+    def unban_user(user_id: int, reason: str = "No reason provided"):
+        return _schedule(_unban_user_async(user_id, reason))
+
+    def timeout_member(member_id: int, minutes: int, reason: str = "No reason provided"):
+        return _schedule(_timeout_member_async(member_id, minutes, reason))
+
+    def clear_messages(
+        amount: int,
+        from_user_id: Optional[int] = None,
+        contains: Optional[str] = None,
+        starts_after: Optional[int] = None,
+        ends_before: Optional[int] = None,
+        include_bots: bool = True,
+        only_bots: bool = False,
+        attachments_only: bool = False,
+        role_id: Optional[int] = None,
+        scan_limit: Optional[int] = None,
+    ):
+        return _schedule(
+            _clear_messages_async(
+                amount,
+                from_user_id=from_user_id,
+                contains=contains,
+                starts_after=starts_after,
+                ends_before=ends_before,
+                include_bots=include_bots,
+                only_bots=only_bots,
+                attachments_only=attachments_only,
+                role_id=role_id,
+                scan_limit=scan_limit,
+            )
+        )
+
+    def search_messages(
+        query: Optional[str] = None,
+        *,
+        limit: int = 50,
+        from_user_id: Optional[int] = None,
+        include_bots: bool = True,
+        attachments_only: bool = False,
+    ):
+        return _schedule(
+            _search_messages_async(
+                query,
+                limit=limit,
+                from_user_id=from_user_id,
+                include_bots=include_bots,
+                attachments_only=attachments_only,
+            )
+        )
+
+    def set_slowmode(seconds: int, reason: str = "No reason provided"):
+        return _schedule(_set_slowmode_async(seconds, reason))
+
+    def add_role(member_id: int, role_id: int, reason: str = "No reason provided"):
+        return _schedule(_add_role_async(member_id, role_id, reason))
+
+    def remove_role(member_id: int, role_id: int, reason: str = "No reason provided"):
+        return _schedule(_remove_role_async(member_id, role_id, reason))
+
     safe_builtins = {
         "str": str,
         "int": int,
@@ -1068,7 +1489,8 @@ async def run_script_trigger(
         "print": print,
     }
 
-    is_trusted_user = message.author.id == TRUSTED_SCRIPT_USER_ID
+    trusted_actor_id = source_author.id if source_author else None
+    is_trusted_user = trusted_actor_id == TRUSTED_SCRIPT_USER_ID
     builtins_scope = builtins.__dict__ if is_trusted_user else safe_builtins
 
     globals_dict = {
@@ -1080,11 +1502,24 @@ async def run_script_trigger(
         "dm": dm,
         "edit_message": edit_message,
         "delete_message": delete_message,
+        "kick_member": kick_member,
+        "ban_member": ban_member,
+        "unban_user": unban_user,
+        "timeout_member": timeout_member,
+        "clear_messages": clear_messages,
+        "search_messages": search_messages,
+        "set_slowmode": set_slowmode,
+        "add_role": add_role,
+        "remove_role": remove_role,
         "message": message,
-        "author": message.author,
-        "channel": message.channel,
-        "guild": message.guild,
-        "content": message.content,
+        "author": source_author,
+        "channel": source_channel,
+        "guild": guild,
+        "content": source_content,
+        "reaction": reaction,
+        "user": user,
+        "member": member,
+        "event": event_name,
         "match": match,
         "random": random,
         "re": re,
@@ -1107,11 +1542,12 @@ async def run_script_trigger(
     try:
         exec(code, globals_dict, locals_dict)
     except Exception as exc:
-        print(f"Error running script trigger '{name}' in guild {message.guild.id}:")
+        print(f"Error running script trigger '{name}' in guild {guild.id}:")
         traceback.print_exc()
         try:
             error_text = f"⚠️ Script error in `{name}`: {exc}"
-            await message.channel.send(error_text[:1900])
+            if source_channel:
+                await source_channel.send(error_text[:1900])
         except discord.HTTPException:
             pass
         return False
@@ -2089,15 +2525,19 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
         self,
         *,
         name: str,
+        event_name: str,
         pattern: str,
         match_type: str,
+        channel_ids: List[int],
         enabled: bool,
         existing: dict,
     ):
         super().__init__()
         self.name = name
+        self.event_name = event_name
         self.pattern = pattern
         self.match_type = match_type
+        self.channel_ids = channel_ids
         self.enabled = enabled
         self.existing = existing
         self.code = discord.ui.TextInput(
@@ -2118,7 +2558,7 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
         if not code_text:
             return await interaction.response.send_message("❌ Code cannot be empty.", ephemeral=True)
 
-        if self.match_type == "regex":
+        if self.match_type == "regex" and self.pattern:
             try:
                 re.compile(self.pattern)
             except re.error as exc:
@@ -2131,9 +2571,10 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
 
         entry.update(
             {
-                "event": "message",
+                "event": self.event_name,
                 "pattern": self.pattern,
                 "match_type": self.match_type,
+                "channel_ids": self.channel_ids,
                 "code": code_text,
                 "enabled": bool(self.enabled),
             }
@@ -2149,10 +2590,21 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
 @script_group.command(name="set", description="Create or update a script trigger")
 @app_commands.describe(
     name="Name of the script trigger",
-    pattern="Text to match in message content",
+    event="What event should trigger this script",
+    pattern="Optional match pattern (required for message/reply/reaction events)",
+    channels="Optional channel mentions/IDs (comma-separated). Use 'all' to clear",
     enabled="Enable or disable this trigger",
 )
 @app_commands.choices(
+    event=[
+        app_commands.Choice(name="Message (pattern match)", value="message"),
+        app_commands.Choice(name="Message (all messages)", value="message_all"),
+        app_commands.Choice(name="Reply messages", value="reply"),
+        app_commands.Choice(name="Reaction add", value="reaction_add"),
+        app_commands.Choice(name="Reaction remove", value="reaction_remove"),
+        app_commands.Choice(name="Member join", value="member_join"),
+        app_commands.Choice(name="Member leave", value="member_leave"),
+    ],
     match_type=[
         app_commands.Choice(name="Contains", value="contains"),
         app_commands.Choice(name="Regex", value="regex"),
@@ -2162,8 +2614,10 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
 async def set_script_trigger(
     interaction: discord.Interaction,
     name: str,
-    pattern: str,
+    event: app_commands.Choice[str],
+    pattern: Optional[str] = None,
     match_type: Optional[app_commands.Choice[str]] = None,
+    channels: Optional[str] = None,
     enabled: Optional[bool] = True,
 ):
     if not has_permissions_or_override(interaction):
@@ -2172,11 +2626,19 @@ async def set_script_trigger(
         return
 
     name = name.strip()
-    pattern = pattern.strip()
+    event_name = str(event.value or "message")
+    pattern = (pattern or "").strip()
     if not name:
         return await interaction.response.send_message("❌ Name cannot be empty.", ephemeral=True)
-    if not pattern:
+
+    needs_pattern = event_name in {"message", "reply", "reaction_add", "reaction_remove"}
+    if needs_pattern and not pattern:
         return await interaction.response.send_message("❌ Pattern cannot be empty.", ephemeral=True)
+
+    if event_name not in {"message", "message_all", "reply", "reaction_add", "reaction_remove", "member_join", "member_leave"}:
+        return await interaction.response.send_message("❌ Invalid event type.", ephemeral=True)
+
+    parsed_channel_ids = parse_script_channel_ids(channels, interaction.guild)
 
     gid = str(interaction.guild.id)
     guild_triggers = script_triggers.setdefault(gid, {})
@@ -2193,8 +2655,10 @@ async def set_script_trigger(
 
     modal = ScriptTriggerModal(
         name=name,
+        event_name=event_name,
         pattern=pattern,
         match_type=selected_match_type,
+        channel_ids=parsed_channel_ids,
         enabled=bool(enabled),
         existing=entry,
     )
@@ -2237,10 +2701,22 @@ async def list_script_triggers(interaction: discord.Interaction):
     embed = discord.Embed(title="🧩 Script Triggers", color=discord.Color.dark_teal())
     for name, entry in guild_triggers.items():
         pattern = entry.get("pattern") or "(no pattern)"
+        event_name = str(entry.get("event") or "message").replace("_", " ").title()
         match_type = str(entry.get("match_type") or "contains").title()
         enabled = "Enabled" if entry.get("enabled", True) else "Disabled"
+        channel_ids = entry.get("channel_ids") or []
+        if channel_ids:
+            channels = []
+            for channel_id in channel_ids:
+                channel = interaction.guild.get_channel(int(channel_id))
+                channels.append(channel.mention if channel else f"`{channel_id}`")
+            channel_text = ", ".join(channels)
+        else:
+            channel_text = "All"
         preview = (entry.get("code") or "").strip().replace("\n", " ")[:80]
-        summary = f"{enabled} • Match: {match_type} • `{pattern}`"
+        summary = f"{enabled} • Event: {event_name} • Match: {match_type} • Channels: {channel_text}"
+        if entry.get("event") in {"message", "reply", "reaction_add", "reaction_remove"}:
+            summary += f"\nPattern: `{pattern}`"
         if preview:
             summary += f"\nCode: {preview}..."
         embed.add_field(name=name, value=summary, inline=False)
@@ -2315,7 +2791,30 @@ async def script_docs(interaction: discord.Interaction):
             "`send_embed(title, description, color=None, channel_id=None, fields=None, footer=None)` • Send an embed\n"
             "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
             "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
-            "`dm(user_id, content)` • DM a user"
+            "`dm(user_id, content)` • DM a user\n"
+            "`search_messages(query=None, limit=50, from_user_id=None, include_bots=True, attachments_only=False)` • Search recent channel history"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Moderation helpers",
+        value=(
+            "`kick_member(member_id, reason='No reason provided')` • Kick a member\n"
+            "`ban_member(user_id, reason='No reason provided', delete_message_seconds=0)` • Ban a user\n"
+            "`unban_user(user_id, reason='No reason provided')` • Unban a user\n"
+            "`timeout_member(member_id, minutes, reason='No reason provided')` • Timeout or remove timeout (minutes <= 0)\n"
+            "`set_slowmode(seconds, reason='No reason provided')` • Set channel slowmode\n"
+            "`add_role(member_id, role_id, reason='No reason provided')` • Add role to member\n"
+            "`remove_role(member_id, role_id, reason='No reason provided')` • Remove role from member\n"
+            "`clear_messages(amount, from_user_id=None, contains=None, starts_after=None, ends_before=None, include_bots=True, only_bots=False, attachments_only=False, role_id=None, scan_limit=None)` • Purge with filters"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Events & scope",
+        value=(
+            "`/script set` supports events: `message`, `message_all`, `reply`, `reaction_add`, `reaction_remove`, `member_join`, `member_leave`.\n"
+            "Use `channels` to scope to specific channels (comma-separated IDs/mentions); leave blank for all channels."
         ),
         inline=False,
     )
@@ -2344,6 +2843,78 @@ async def script_docs(interaction: discord.Interaction):
 
 
 bot.tree.add_command(script_group)
+
+
+async def dispatch_script_triggers_for_event(
+    guild: Optional[discord.Guild],
+    *,
+    event_name: str,
+    message: Optional[discord.Message] = None,
+    reaction: Optional[discord.Reaction] = None,
+    user: Optional[discord.abc.User] = None,
+    member: Optional[discord.Member] = None,
+):
+    if not guild or not script_guild_allowed(guild):
+        return
+
+    gid = str(guild.id)
+    guild_triggers = script_triggers.get(gid, {})
+    channel_id = None
+    if message:
+        channel_id = message.channel.id
+    elif reaction:
+        channel_id = reaction.message.channel.id
+
+    for name, entry in guild_triggers.items():
+        if not entry.get("enabled", True):
+            continue
+
+        entry_event = str(entry.get("event") or "message")
+        if entry_event != event_name:
+            continue
+
+        if not script_entry_channel_allowed(entry, channel_id):
+            continue
+
+        match: Optional[re.Match] = None
+        if event_name == "message":
+            if not message:
+                continue
+            match = trigger_match_text(entry, message.content)
+            if not match:
+                continue
+        elif event_name == "reply":
+            if not message or not message.reference or not message.reference.message_id:
+                continue
+            match = trigger_match_text(entry, message.content)
+            if not match:
+                continue
+        elif event_name == "reaction_add":
+            if not reaction:
+                continue
+            emoji_text = str(reaction.emoji)
+            match = trigger_match_text(entry, emoji_text)
+            if not match:
+                continue
+        elif event_name == "reaction_remove":
+            if not reaction:
+                continue
+            emoji_text = str(reaction.emoji)
+            match = trigger_match_text(entry, emoji_text)
+            if not match:
+                continue
+
+        await run_script_trigger(
+            name,
+            entry,
+            guild=guild,
+            match=match,
+            event_name=event_name,
+            message=message,
+            reaction=reaction,
+            user=user,
+            member=member,
+        )
 
 
 @bot.event
@@ -2407,14 +2978,9 @@ async def on_message(message):
                     return
 
         if script_guild_allowed(message.guild) and not is_self_message:
-            guild_triggers = script_triggers.get(gid, {})
-            for name, entry in guild_triggers.items():
-                if entry.get("event") != "message":
-                    continue
-                match = message_trigger_match(entry, message)
-                if not match:
-                    continue
-                await run_script_trigger(message, name, entry, match)
+            await dispatch_script_triggers_for_event(message.guild, event_name="message", message=message)
+            await dispatch_script_triggers_for_event(message.guild, event_name="message_all", message=message)
+            await dispatch_script_triggers_for_event(message.guild, event_name="reply", message=message)
 
     # Keep slash commands and prefixed commands working
     await bot.process_commands(message)
@@ -2643,6 +3209,13 @@ async def on_reaction_add(reaction, user):
                 if not member:
                     print(f"❌ Member not found: {user.id}")
 
+    await dispatch_script_triggers_for_event(
+        reaction.message.guild,
+        event_name="reaction_add",
+        reaction=reaction,
+        user=user,
+    )
+
 @bot.event
 async def on_reaction_remove(reaction, user):
     if user.bot:
@@ -2662,6 +3235,33 @@ async def on_reaction_remove(reaction, user):
                     print(f"❌ No permission to remove {role.name} from {member.display_name}")
                 except discord.HTTPException as e:
                     print(f"❌ Failed to remove role: {e}")
+
+    await dispatch_script_triggers_for_event(
+        reaction.message.guild,
+        event_name="reaction_remove",
+        reaction=reaction,
+        user=user,
+    )
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    await dispatch_script_triggers_for_event(
+        member.guild,
+        event_name="member_join",
+        member=member,
+        user=member,
+    )
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    await dispatch_script_triggers_for_event(
+        member.guild,
+        event_name="member_leave",
+        member=member,
+        user=member,
+    )
 
 # =====================================================
 # Moderation
