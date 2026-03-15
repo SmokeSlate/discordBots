@@ -71,7 +71,7 @@ autoreply_cooldowns = {}
 giveaways = {}
 script_triggers = {}
 
-ALLOWED_SCRIPT_GUILDS = {1385295315245989999}
+ALLOWED_SCRIPT_GUILDS = {1385295315245989999, 1102679144178921522}
 TRUSTED_SCRIPT_USER_ID = 823654955025956895
 
 # =====================================================
