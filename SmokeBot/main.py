@@ -1061,6 +1061,17 @@ async def script_api_options(_request: web.Request) -> web.Response:
     return _script_api_response(_request, {"ok": True})
 
 
+async def script_api_health(request: web.Request) -> web.Response:
+    return _script_api_response(
+        request,
+        {
+            "ok": True,
+            "bot_ready": bot.is_ready(),
+            "guild_count": len(bot.guilds) if bot.is_ready() else 0,
+        },
+    )
+
+
 async def script_api_get_triggers(request: web.Request) -> web.Response:
     guild_id = request.match_info.get("guild_id", "")
     allowed, error = await _script_api_can_manage_guild(request, guild_id)
@@ -1145,6 +1156,7 @@ async def start_script_manager_api():
         return
 
     app = web.Application()
+    app.router.add_get("/healthz", script_api_health)
     app.router.add_route("OPTIONS", "/api/script-triggers/guilds", script_api_options)
     app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}", script_api_options)
     app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}/{name}", script_api_options)
@@ -4086,11 +4098,20 @@ async def help_mod(interaction: discord.Interaction):
 # Run
 # =====================================================
 
-async def run_bot(token: str):
+async def run_service(token: Optional[str]):
     initialize_runtime_state()
     await start_script_manager_api()
-    async with bot:
-        await bot.start(token)
+    if not token:
+        logger.warning("Bot token missing; script manager API is running without Discord connectivity.")
+        await asyncio.Event().wait()
+        return
+
+    try:
+        async with bot:
+            await bot.start(token)
+    except Exception:
+        logger.exception("Discord bot stopped unexpectedly; keeping script manager API online.")
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
@@ -4099,7 +4120,4 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
     token = load_token()
-    if token:
-        asyncio.run(run_bot(token))
-    else:
-        print("Failed to load token. Please make sure token.txt exists and contains your bot token.")
+    asyncio.run(run_service(token))
