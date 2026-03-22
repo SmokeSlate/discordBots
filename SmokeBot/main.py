@@ -913,20 +913,37 @@ def save_script_triggers():
     write_json("script_triggers.json", script_triggers)
 
 
-def _script_api_origin() -> str:
-    return os.getenv("SCRIPT_MANAGER_ORIGIN", "*")
+def _script_api_allowed_origins() -> List[str]:
+    raw = os.getenv("SCRIPT_MANAGER_ORIGIN", "*")
+    allowed = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return allowed or ["*"]
 
 
-def _script_api_response(payload: Any, status: int = 200) -> web.Response:
-    return web.json_response(
-        payload,
-        status=status,
-        headers={
-            "Access-Control-Allow-Origin": _script_api_origin(),
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
-            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
-        },
-    )
+def _script_api_response_headers(request: web.Request) -> Dict[str, str]:
+    origin = request.headers.get("Origin", "").strip()
+    allowed_origins = _script_api_allowed_origins()
+    allow_origin: Optional[str] = None
+
+    if "*" in allowed_origins:
+        allow_origin = origin or "*"
+    elif origin and origin in allowed_origins:
+        allow_origin = origin
+    elif not origin and allowed_origins:
+        allow_origin = allowed_origins[0]
+
+    headers = {
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+        "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+        "Access-Control-Max-Age": "86400",
+        "Vary": "Origin",
+    }
+    if allow_origin:
+        headers["Access-Control-Allow-Origin"] = allow_origin
+    return headers
+
+
+def _script_api_response(request: web.Request, payload: Any, status: int = 200) -> web.Response:
+    return web.json_response(payload, status=status, headers=_script_api_response_headers(request))
 
 
 def _script_api_bot_has_guild(guild_id: str) -> bool:
@@ -1041,31 +1058,31 @@ def _sanitize_script_entry(payload: dict) -> dict:
 
 
 async def script_api_options(_request: web.Request) -> web.Response:
-    return _script_api_response({"ok": True})
+    return _script_api_response(_request, {"ok": True})
 
 
 async def script_api_get_triggers(request: web.Request) -> web.Response:
     guild_id = request.match_info.get("guild_id", "")
     allowed, error = await _script_api_can_manage_guild(request, guild_id)
     if not allowed:
-        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+        return _script_api_response(request, {"error": error}, status=403 if error and "Unauthorized" not in error else 401)
 
-    return _script_api_response({"guild_id": guild_id, "triggers": script_triggers.get(guild_id, {})})
+    return _script_api_response(request, {"guild_id": guild_id, "triggers": script_triggers.get(guild_id, {})})
 
 
 async def script_api_upsert_trigger(request: web.Request) -> web.Response:
     guild_id = request.match_info.get("guild_id", "")
     trigger_name = request.match_info.get("name", "").strip()
     if not trigger_name:
-        return _script_api_response({"error": "Missing trigger name"}, status=400)
+        return _script_api_response(request, {"error": "Missing trigger name"}, status=400)
     allowed, error = await _script_api_can_manage_guild(request, guild_id)
     if not allowed:
-        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+        return _script_api_response(request, {"error": error}, status=403 if error and "Unauthorized" not in error else 401)
 
     try:
         body = await request.json()
     except json.JSONDecodeError:
-        return _script_api_response({"error": "Invalid JSON payload"}, status=400)
+        return _script_api_response(request, {"error": "Invalid JSON payload"}, status=400)
 
     entry = _sanitize_script_entry(body)
     async with script_api_lock:
@@ -1073,32 +1090,32 @@ async def script_api_upsert_trigger(request: web.Request) -> web.Response:
         guild_triggers[trigger_name] = entry
         save_script_triggers()
 
-    return _script_api_response({"ok": True, "name": trigger_name, "entry": entry})
+    return _script_api_response(request, {"ok": True, "name": trigger_name, "entry": entry})
 
 
 async def script_api_delete_trigger(request: web.Request) -> web.Response:
     guild_id = request.match_info.get("guild_id", "")
     trigger_name = request.match_info.get("name", "").strip()
     if not trigger_name:
-        return _script_api_response({"error": "Missing trigger name"}, status=400)
+        return _script_api_response(request, {"error": "Missing trigger name"}, status=400)
     allowed, error = await _script_api_can_manage_guild(request, guild_id)
     if not allowed:
-        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+        return _script_api_response(request, {"error": error}, status=403 if error and "Unauthorized" not in error else 401)
 
     async with script_api_lock:
         guild_triggers = script_triggers.get(guild_id, {})
         if trigger_name in guild_triggers:
             del guild_triggers[trigger_name]
             save_script_triggers()
-            return _script_api_response({"ok": True, "name": trigger_name})
+            return _script_api_response(request, {"ok": True, "name": trigger_name})
 
-    return _script_api_response({"error": "Script trigger not found"}, status=404)
+    return _script_api_response(request, {"error": "Script trigger not found"}, status=404)
 
 
 async def script_api_list_manageable_guilds(request: web.Request) -> web.Response:
     authorized, error, guilds = await _script_api_authorize_request(request)
     if not authorized:
-        return _script_api_response({"error": error or "Unauthorized"}, status=401)
+        return _script_api_response(request, {"error": error or "Unauthorized"}, status=401)
 
     manageable = []
     for guild in guilds:
@@ -1119,7 +1136,7 @@ async def script_api_list_manageable_guilds(request: web.Request) -> web.Respons
             }
         )
 
-    return _script_api_response({"guilds": manageable})
+    return _script_api_response(request, {"guilds": manageable})
 
 
 async def start_script_manager_api():

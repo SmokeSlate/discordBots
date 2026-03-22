@@ -1,5 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const BOT_API_BASE = window.SMOKEBOT_API_BASE || "https://botapi.sm0ke.org:8080";
+  const BOT_API_BASE = (window.SMOKEBOT_API_BASE || "https://botapi.sm0ke.org").replace(/\/$/, "");
   const DISCORD_CLIENT_ID = "1375925201191178300";
   const TOKEN_STORAGE_KEY = "smokebot-discord-access-token-v1";
   const SELECTED_GUILD_STORAGE_KEY = "smokebot-selected-guild-v1";
