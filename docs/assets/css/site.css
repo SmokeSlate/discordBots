@@ -2,7 +2,7 @@
     font-family: 'Press Start 2P';
     font-style: normal;
     font-weight: 400;
-    src: local('Press Start 2P'), url('./font.woff') format('woff');
+    src: local('Press Start 2P'), url('../font.woff') format('woff');
     font-display: swap;
 }
 

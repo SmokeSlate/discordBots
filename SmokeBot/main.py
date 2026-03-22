@@ -1996,16 +1996,8 @@ async def auto_update_loop():
             print(f"[auto-update] unexpected error: {exc}")
         await asyncio.sleep(AUTO_UPDATE_INTERVAL_SECONDS)
 
-# =====================================================
-# Ready Event (register persistent views, sync commands)
-# =====================================================
 
-@bot.event
-async def on_ready():
-    global auto_update_task
-    print(f'{bot.user} has connected to Discord!')
-    print(f'Bot is in {len(bot.guilds)} guilds')
-
+def initialize_runtime_state():
     migration_summary = migrate_legacy_json_files()
     if migration_summary["migrated"]:
         print(
@@ -2021,7 +2013,16 @@ async def on_ready():
     load_auto_replies()
     load_giveaways()
     load_script_triggers()
-    await start_script_manager_api()
+
+# =====================================================
+# Ready Event (register persistent views, sync commands)
+# =====================================================
+
+@bot.event
+async def on_ready():
+    global auto_update_task
+    print(f'{bot.user} has connected to Discord!')
+    print(f'Bot is in {len(bot.guilds)} guilds')
 
     for message_id, data in list(giveaways.items()):
         if data.get("ended"):
@@ -4085,6 +4086,13 @@ async def help_mod(interaction: discord.Interaction):
 # Run
 # =====================================================
 
+async def run_bot(token: str):
+    initialize_runtime_state()
+    await start_script_manager_api()
+    async with bot:
+        await bot.start(token)
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -4092,6 +4100,6 @@ if __name__ == "__main__":
     )
     token = load_token()
     if token:
-        bot.run(token)
+        asyncio.run(run_bot(token))
     else:
         print("Failed to load token. Please make sure token.txt exists and contains your bot token.")
