@@ -34,18 +34,18 @@ SmokeBot requires access to message content in servers where administrators enab
 The information described above is used solely to:
 
 * Provide and manage the ticketing, snippet, pin, reaction role, and moderation features requested by server administrators
-* Maintain command configuration across restarts by storing the minimum required settings in local JSON files on the host machine (`ticket_data.json`, `reaction_roles.json`, `snippets.json`, `pinned_messages.json`, `ticket_categories.json`)
+* Maintain command configuration across restarts by storing the minimum required settings in a local SQLite database on the host machine
 * Respond to slash commands and interaction events routed through Discord
 
 SmokeBot does not use the data for analytics, advertising, or any secondary purposes.
 
 ## 3. Where Information Is Stored
-All configuration data is stored locally on the machine that hosts SmokeBot. No data is transmitted to external third parties other than Discord’s platform APIs. Server owners are responsible for securing the machine where the bot runs, including restricting access to the JSON configuration files mentioned above.
+All configuration data is stored locally on the machine that hosts SmokeBot. No data is transmitted to external third parties other than Discord’s platform APIs. Server owners are responsible for securing the machine where the bot runs, including restricting access to the local storage database mentioned above.
 
 ## 4. Data Retention and Deletion
-Stored configuration data remains in place until a server administrator edits or removes it (for example, by deleting a snippet or clearing ticket history) or until the underlying JSON files are deleted from the host machine. Ticket threads themselves remain on Discord until archived or deleted by server staff.
+Stored configuration data remains in place until a server administrator edits or removes it (for example, by deleting a snippet or clearing ticket history) or until the underlying stored records are deleted from the host machine. Ticket threads themselves remain on Discord until archived or deleted by server staff.
 
-Server administrators may request removal of stored configuration data at any time by deleting the corresponding JSON files or by contacting the bot operator. Because SmokeBot is self‑hosted, the operator is typically the server owner or maintainer who deployed the bot.
+Server administrators may request removal of stored configuration data at any time by deleting the corresponding database records or by contacting the bot operator. Because SmokeBot is self‑hosted, the operator is typically the server owner or maintainer who deployed the bot.
 
 ## 5. Legal Basis
 For servers operating under the EU/EEA, SmokeBot processes the limited personal data described above under the legitimate interest of the server administrators who deploy the bot to moderate and support their community.

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en" class="">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SmokeBot - Script Manager</title>
+    <meta
+      name="description"
+      content="Sign in with Discord and manage hosted SmokeBot script triggers for your server."
+    />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="icon" href="/assets/logo.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/assets/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/tailwind.css" />
+    <link rel="stylesheet" href="/assets/css/smokebot.css" />
+  </head>
+  <body class="min-h-screen bg-black text-white">
+    <nav class="fixed top-0 left-0 right-0 z-50">
+      <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
+        <div class="flex justify-between items-center w-full">
+          <a
+            href="/index.html#top"
+            class="flex items-center text-xl font-medium text-white hover:text-yellow-400"
+            aria-label="SmokeBot home"
+          >
+            <img src="/assets/logo.png" alt="SmokeBot logo" class="brand-logo" />
+            <span class="sr-only">SmokeBot</span>
+          </a>
+          <div class="hidden md:flex space-x-4">
+            <a
+              href="/features/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Features</a
+            >
+            <a
+              href="/commands/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Commands</a
+            >
+            <a
+              href="/scripts/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Scripts</a
+            >
+            <a
+              href="/setup/"
+              class="nav-link hover-crt px-4 py-2 border border-white transition-colors duration-200"
+              >Setup</a
+            >
+          </div>
+          <button
+            id="mobile-menu-button"
+            class="hover-crt md:hidden border border-white text-white px-3 py-1 text-sm hover:bg-white hover:text-black transition-colors duration-200"
+          >
+            Menu
+          </button>
+        </div>
+      </div>
+      <div
+        id="mobile-menu"
+        class="hidden md:hidden bg-black bg-opacity-95 border-t border-gray-800"
+      >
+        <div class="site-gutter py-2 space-y-1">
+          <a
+            href="/features/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Features</a
+          >
+          <a
+            href="/commands/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Commands</a
+          >
+          <a
+            href="/scripts/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Scripts</a
+          >
+          <a
+            href="/setup/"
+            class="hover-crt block py-3 px-4 text-white hover:bg-white hover:text-black transition-colors duration-200"
+            >Setup</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <main id="top" class="main-content min-h-screen">
+      <section class="retro-section">
+        <div class="section-shell hero-grid">
+          <div class="hero-stack">
+            <div class="hero-badge">Script tooling</div>
+            <h1 class="hero-title font-bold text-white tracking-tight">Script manager</h1>
+            <p class="hero-subtitle font-mono">
+              Connect directly to the hosted SmokeBot service and manage script
+              triggers for your server.
+            </p>
+            <p class="hero-copy">
+              Log in with Discord, choose your server, and manage script
+              triggers. No API key or manual server ID entry is required for
+              normal users.
+            </p>
+            <p id="api-status" class="text-sm text-green-400">Sign in with Discord to begin.</p>
+          </div>
+          <div class="rail">
+            <div class="band">
+              <h3>Supported events</h3>
+              <p class="text-subtle">
+                message, message_all, reply, reaction_add, reaction_remove,
+                member_join, member_leave
+              </p>
+            </div>
+            <div class="band">
+              <h3>Match types</h3>
+              <p class="text-subtle">contains, exact, regex</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Connection</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">Sign in and choose a server</h2>
+            <p>Authenticate with Discord and select one of your manageable servers.</p>
+            <div class="section-divider"></div>
+          </div>
+          <form id="api-config-form" class="space-y-4 band">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span>Signed in account</span>
+                <input
+                  id="discord_user"
+                  class="bg-black border border-gray-700 p-3 text-white"
+                  placeholder="Not signed in"
+                  readonly
+                />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span>Server</span>
+                <select id="guild_id" class="bg-black border border-gray-700 p-3 text-white">
+                  <option value="">Select a server</option>
+                </select>
+              </label>
+            </div>
+            <div class="hero-actions">
+              <button type="button" id="discord-login" class="btn-retro hover-crt">
+                Sign in with Discord
+              </button>
+              <button type="submit" class="btn-retro secondary hover-crt">
+                Use selected server
+              </button>
+              <button type="button" id="refresh-list" class="btn-retro secondary hover-crt">
+                Refresh
+              </button>
+              <button type="button" id="discord-logout" class="btn-retro secondary hover-crt">
+                Log out
+              </button>
+            </div>
+            <p class="text-subtle text-sm">
+              Tip: if your server is missing, make sure you have "Manage Server"
+              permission and scripts are enabled for that guild.
+            </p>
+          </form>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Editor</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">Create or update script trigger</h2>
+            <p>Fill out the trigger details and save directly to the hosted bot.</p>
+            <div class="section-divider"></div>
+          </div>
+
+          <form id="script-form" class="space-y-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span>Name</span>
+                <input id="name" class="bg-black border border-gray-700 p-3 text-white" required />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span>Event</span>
+                <select id="event" class="bg-black border border-gray-700 p-3 text-white">
+                  <option value="message">message</option>
+                  <option value="message_all">message_all</option>
+                  <option value="reply">reply</option>
+                  <option value="reaction_add">reaction_add</option>
+                  <option value="reaction_remove">reaction_remove</option>
+                  <option value="member_join">member_join</option>
+                  <option value="member_leave">member_leave</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label class="flex flex-col gap-2">
+                <span>Pattern</span>
+                <input id="pattern" class="bg-black border border-gray-700 p-3 text-white" />
+              </label>
+              <label class="flex flex-col gap-2">
+                <span>Match type</span>
+                <select id="match_type" class="bg-black border border-gray-700 p-3 text-white">
+                  <option value="contains">contains</option>
+                  <option value="exact">exact</option>
+                  <option value="regex">regex</option>
+                </select>
+              </label>
+            </div>
+            <label class="flex flex-col gap-2">
+              <span>Quick template</span>
+              <select id="quick_template" class="bg-black border border-gray-700 p-3 text-white">
+                <option value="">Start from blank</option>
+                <option value="send_message">Send message</option>
+                <option value="auto_react">Auto react</option>
+                <option value="mod_ping">Ping staff role</option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-2">
+              <span>Allowed channels (comma-separated IDs, optional)</span>
+              <input
+                id="channel_ids"
+                class="bg-black border border-gray-700 p-3 text-white"
+                placeholder="1234, 4567"
+              />
+            </label>
+            <label class="flex items-center gap-3">
+              <input id="enabled" type="checkbox" checked />
+              <span>Enabled</span>
+            </label>
+            <label class="flex flex-col gap-2">
+              <span>Python code</span>
+              <textarea
+                id="code"
+                rows="10"
+                class="bg-black border border-gray-700 p-3 text-white font-mono"
+                required
+              ></textarea>
+            </label>
+            <div class="hero-actions">
+              <button type="submit" class="btn-retro hover-crt">Save trigger</button>
+              <button type="button" id="reset-form" class="btn-retro secondary hover-crt">
+                Reset form
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="retro-section section-spacing border-t border-gray-900">
+        <div class="section-shell">
+          <div class="section-header">
+            <div class="eyebrow">Stored triggers</div>
+            <h2 class="text-3xl md:text-4xl font-bold text-white">Guild script list</h2>
+            <p>Click Edit to load an entry into the form. Delete removes it from the bot.</p>
+            <div class="section-divider"></div>
+          </div>
+          <label class="flex flex-col gap-2 mb-4">
+            <span>Search triggers</span>
+            <input
+              id="script_search"
+              class="bg-black border border-gray-700 p-3 text-white"
+              placeholder="Filter by name, event, or pattern..."
+            />
+          </label>
+          <div id="script-list" class="space-y-3"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="retro-section text-gray-400 py-8 border-t border-gray-800">
+      <div class="site-gutter">
+        <p class="text-sm">SmokeBot script manager - hosted bot integration tooling.</p>
+      </div>
+    </footer>
+
+    <script src="/assets/js/smokebot.js" defer></script>
+    <script src="/assets/js/script-manager.js" defer></script>
+  </body>
+</html>

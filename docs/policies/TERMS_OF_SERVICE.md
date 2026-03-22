@@ -10,7 +10,7 @@ These Terms of Service ("Terms") govern the use of SmokeBot, a Discord moderatio
 * Server administrators are responsible for managing access to the bot token and the environment where SmokeBot is hosted.
 
 ## 2. Bot Functionality
-SmokeBot offers ticketing, snippet automation, persistent pins, reaction roles, and moderation utilities. The bot processes Discord data only as necessary to provide these features. Configuration data is stored locally on the host machine as JSON files (`ticket_data.json`, `reaction_roles.json`, `snippets.json`, `pinned_messages.json`, `ticket_categories.json`).
+SmokeBot offers ticketing, snippet automation, persistent pins, reaction roles, and moderation utilities. The bot processes Discord data only as necessary to provide these features. Configuration data is stored locally on the host machine in a SQLite database.
 
 ## 3. Acceptable Use
 When using SmokeBot, you agree not to:

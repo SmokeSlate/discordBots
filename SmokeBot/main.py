@@ -1,46 +1,37 @@
 # =====================================================
 # Discord Bot
-# - Custom ticket categories (JSON storage + slash cmds)
+# - Custom ticket categories (SQLite single-file storage + slash cmds)
 # - No "used /ticket" banner (ephemeral confirmations)
 # - Pins, reaction roles, moderation, help
 # - Snippet system (static & dynamic with placeholders)
 # - Snippet migration to new JSON format
 # =====================================================
 
-import discord
-from discord import app_commands
-from discord.ext import commands
 import asyncio
 import builtins
 import json
+import logging
 import os
 import random
 import re
-import traceback
+import sys
+import time
 import urllib.error
 import urllib.request
-from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
-# =====================================================
-# Utility functions for data handling
-# =====================================================
+import discord
+from aiohttp import web
+from discord import app_commands
+from discord.ext import commands
 
-def read_json(path, default_factory):
-    """Read JSON file, creating it with default content if missing."""
-    try:
-        with open(path, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        data = default_factory() if callable(default_factory) else default_factory
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=2)
-        return data
-
-def write_json(path, data):
-    """Write JSON to disk with pretty formatting."""
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
+try:
+    from .auto_update import apply_git_update, get_git_update_status
+    from .storage import migrate_legacy_json_files, read_json, write_json
+except ImportError:
+    from auto_update import apply_git_update, get_git_update_status
+    from storage import migrate_legacy_json_files, read_json, write_json
 
 # =====================================================
 # Token Loader
@@ -64,6 +55,10 @@ intents.members = True
 intents.reactions = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
+logger = logging.getLogger("smokebot")
+script_api_runner: Optional[web.AppRunner] = None
+script_api_lock = asyncio.Lock()
+discord_token_cache: Dict[str, Tuple[float, List[dict]]] = {}
 
 reaction_roles = {}
 ticket_data = {}
@@ -72,9 +67,16 @@ auto_replies = {}
 autoreply_cooldowns = {}
 giveaways = {}
 script_triggers = {}
+auto_update_task = None
+auto_update_lock = asyncio.Lock()
 
 ALLOWED_SCRIPT_GUILDS = {1385295315245989999, 1102679144178921522}
 TRUSTED_SCRIPT_USER_ID = 823654955025956895
+AUTO_UPDATE_ENABLED = os.getenv("SMOKEBOT_AUTO_UPDATE", "false").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_UPDATE_INTERVAL_SECONDS = max(300, int(os.getenv("SMOKEBOT_AUTO_UPDATE_INTERVAL_SECONDS", "900")))
+AUTO_UPDATE_REMOTE = os.getenv("SMOKEBOT_AUTO_UPDATE_REMOTE", "origin").strip() or "origin"
+AUTO_UPDATE_BRANCH = os.getenv("SMOKEBOT_AUTO_UPDATE_BRANCH", "main").strip() or "main"
+AUTO_UPDATE_REPO_DIR = os.getenv("SMOKEBOT_AUTO_UPDATE_REPO_DIR", ".").strip() or "."
 
 # =====================================================
 # Permissions Checkers
@@ -911,6 +913,238 @@ def save_script_triggers():
     write_json("script_triggers.json", script_triggers)
 
 
+def _script_api_origin() -> str:
+    return os.getenv("SCRIPT_MANAGER_ORIGIN", "*")
+
+
+def _script_api_response(payload: Any, status: int = 200) -> web.Response:
+    return web.json_response(
+        payload,
+        status=status,
+        headers={
+            "Access-Control-Allow-Origin": _script_api_origin(),
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+        },
+    )
+
+
+def _script_api_bot_has_guild(guild_id: str) -> bool:
+    try:
+        guild_int = int(guild_id)
+    except (TypeError, ValueError):
+        return False
+    return bot.get_guild(guild_int) is not None
+
+
+def _discord_has_manage_guild_permissions(guild_payload: dict) -> bool:
+    permissions_raw = guild_payload.get("permissions")
+    try:
+        permissions = int(str(permissions_raw))
+    except (TypeError, ValueError):
+        return False
+    ADMINISTRATOR = 0x00000008
+    MANAGE_GUILD = 0x00000020
+    return bool(permissions & ADMINISTRATOR or permissions & MANAGE_GUILD)
+
+
+def _extract_discord_bearer_token(request: web.Request) -> str:
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return ""
+
+
+async def _discord_get_user_guilds(access_token: str) -> List[dict]:
+    now = time.time()
+    cached = discord_token_cache.get(access_token)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    def _request():
+        request = urllib.request.Request(
+            "https://discord.com/api/v10/users/@me/guilds",
+            headers={"Authorization": f"Bearer {access_token}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            parsed = json.loads(body)
+            return parsed if isinstance(parsed, list) else []
+
+    guilds = await asyncio.to_thread(_request)
+    discord_token_cache[access_token] = (now + 30, guilds)
+    return guilds
+
+
+async def _script_api_authorize_request(request: web.Request) -> Tuple[bool, Optional[str], List[dict]]:
+    access_token = _extract_discord_bearer_token(request)
+    if access_token:
+        try:
+            guilds = await _discord_get_user_guilds(access_token)
+            return True, None, guilds
+        except Exception:
+            logger.exception("Failed Discord OAuth validation for script manager request.")
+            return False, "Discord authentication failed", []
+
+    configured = os.getenv("SCRIPT_MANAGER_API_KEY", "").strip()
+    provided = request.headers.get("X-API-Key", "").strip()
+    if configured and provided == configured:
+        return True, None, []
+    return False, "Unauthorized", []
+
+
+async def _script_api_can_manage_guild(request: web.Request, guild_id: str) -> Tuple[bool, Optional[str]]:
+    if not _script_api_bot_has_guild(guild_id):
+        return False, "Guild not managed by bot"
+    if not _script_api_guild_allowed(guild_id):
+        return False, "Script triggers are not enabled for this server"
+
+    authorized, error, guilds = await _script_api_authorize_request(request)
+    if not authorized:
+        return False, error or "Unauthorized"
+
+    if guilds:
+        matching = next((g for g in guilds if str(g.get("id")) == str(guild_id)), None)
+        if not matching:
+            return False, "You do not have access to this server"
+        if not _discord_has_manage_guild_permissions(matching):
+            return False, "You need Manage Server permission"
+
+    return True, None
+
+
+def _script_api_guild_allowed(guild_id: str) -> bool:
+    try:
+        guild_int = int(guild_id)
+    except (TypeError, ValueError):
+        return False
+    return guild_int in ALLOWED_SCRIPT_GUILDS
+
+
+def _sanitize_script_entry(payload: dict) -> dict:
+    entry = ensure_script_trigger_defaults(payload if isinstance(payload, dict) else {})
+    channel_ids = entry.get("channel_ids") or []
+    valid_channel_ids = []
+    for channel_id in channel_ids:
+        try:
+            valid_channel_ids.append(int(channel_id))
+        except (TypeError, ValueError):
+            continue
+    entry["channel_ids"] = list(dict.fromkeys(valid_channel_ids))
+    entry["code"] = str(entry.get("code") or "")
+    entry["pattern"] = str(entry.get("pattern") or "")
+    entry["event"] = str(entry.get("event") or "message")
+    entry["match_type"] = str(entry.get("match_type") or "contains")
+    entry["enabled"] = bool(entry.get("enabled", True))
+    return entry
+
+
+async def script_api_options(_request: web.Request) -> web.Response:
+    return _script_api_response({"ok": True})
+
+
+async def script_api_get_triggers(request: web.Request) -> web.Response:
+    guild_id = request.match_info.get("guild_id", "")
+    allowed, error = await _script_api_can_manage_guild(request, guild_id)
+    if not allowed:
+        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+
+    return _script_api_response({"guild_id": guild_id, "triggers": script_triggers.get(guild_id, {})})
+
+
+async def script_api_upsert_trigger(request: web.Request) -> web.Response:
+    guild_id = request.match_info.get("guild_id", "")
+    trigger_name = request.match_info.get("name", "").strip()
+    if not trigger_name:
+        return _script_api_response({"error": "Missing trigger name"}, status=400)
+    allowed, error = await _script_api_can_manage_guild(request, guild_id)
+    if not allowed:
+        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _script_api_response({"error": "Invalid JSON payload"}, status=400)
+
+    entry = _sanitize_script_entry(body)
+    async with script_api_lock:
+        guild_triggers = script_triggers.setdefault(guild_id, {})
+        guild_triggers[trigger_name] = entry
+        save_script_triggers()
+
+    return _script_api_response({"ok": True, "name": trigger_name, "entry": entry})
+
+
+async def script_api_delete_trigger(request: web.Request) -> web.Response:
+    guild_id = request.match_info.get("guild_id", "")
+    trigger_name = request.match_info.get("name", "").strip()
+    if not trigger_name:
+        return _script_api_response({"error": "Missing trigger name"}, status=400)
+    allowed, error = await _script_api_can_manage_guild(request, guild_id)
+    if not allowed:
+        return _script_api_response({"error": error}, status=403 if error and "Unauthorized" not in error else 401)
+
+    async with script_api_lock:
+        guild_triggers = script_triggers.get(guild_id, {})
+        if trigger_name in guild_triggers:
+            del guild_triggers[trigger_name]
+            save_script_triggers()
+            return _script_api_response({"ok": True, "name": trigger_name})
+
+    return _script_api_response({"error": "Script trigger not found"}, status=404)
+
+
+async def script_api_list_manageable_guilds(request: web.Request) -> web.Response:
+    authorized, error, guilds = await _script_api_authorize_request(request)
+    if not authorized:
+        return _script_api_response({"error": error or "Unauthorized"}, status=401)
+
+    manageable = []
+    for guild in guilds:
+        guild_id = str(guild.get("id") or "")
+        if not guild_id:
+            continue
+        if not _script_api_bot_has_guild(guild_id):
+            continue
+        if not _script_api_guild_allowed(guild_id):
+            continue
+        if not _discord_has_manage_guild_permissions(guild):
+            continue
+        manageable.append(
+            {
+                "id": guild_id,
+                "name": guild.get("name") or guild_id,
+                "icon": guild.get("icon"),
+            }
+        )
+
+    return _script_api_response({"guilds": manageable})
+
+
+async def start_script_manager_api():
+    global script_api_runner
+    if script_api_runner is not None:
+        return
+
+    app = web.Application()
+    app.router.add_route("OPTIONS", "/api/script-triggers/guilds", script_api_options)
+    app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}", script_api_options)
+    app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}/{name}", script_api_options)
+    app.router.add_get("/api/script-triggers/guilds", script_api_list_manageable_guilds)
+    app.router.add_get("/api/script-triggers/{guild_id}", script_api_get_triggers)
+    app.router.add_put("/api/script-triggers/{guild_id}/{name}", script_api_upsert_trigger)
+    app.router.add_delete("/api/script-triggers/{guild_id}/{name}", script_api_delete_trigger)
+
+    script_api_runner = web.AppRunner(app)
+    await script_api_runner.setup()
+    host = os.getenv("SCRIPT_MANAGER_API_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    port = int(os.getenv("SCRIPT_MANAGER_API_PORT", "8080"))
+    site = web.TCPSite(script_api_runner, host=host, port=port)
+    await site.start()
+    logger.info("Script manager API listening on http://%s:%s", host, port)
+
+
 def script_guild_allowed(guild: Optional[discord.Guild]) -> bool:
     return guild is not None and guild.id in ALLOWED_SCRIPT_GUILDS
 
@@ -1639,8 +1873,7 @@ async def run_script_trigger(
     try:
         exec(code, globals_dict, locals_dict)
     except Exception as exc:
-        print(f"Error running script trigger '{name}' in guild {guild.id}:")
-        traceback.print_exc()
+        logger.exception("Error running script trigger '%s' in guild %s", name, guild.id)
         try:
             error_text = f"⚠️ Script error in `{name}`: {exc}"
             if source_channel:
@@ -1694,14 +1927,76 @@ ticket_categories = read_json("ticket_categories.json", default_ticket_categorie
 def save_ticket_categories(categories):
     write_json("ticket_categories.json", categories)
 
+
+async def perform_auto_update_check():
+    """Fetch remote updates and restart the process after a successful update."""
+    async with auto_update_lock:
+        status = await asyncio.to_thread(
+            get_git_update_status,
+            AUTO_UPDATE_REPO_DIR,
+            AUTO_UPDATE_REMOTE,
+            AUTO_UPDATE_BRANCH,
+        )
+
+        if not status.get("ok"):
+            reason = status.get("reason", "unknown")
+            details = status.get("details", "no details")
+            print(f"[auto-update] status check failed ({reason}): {details}")
+            return
+
+        if status.get("up_to_date", True):
+            print("[auto-update] no updates available")
+            return
+
+        print(
+            "[auto-update] update available "
+            f"{status.get('local_sha', 'unknown')} -> {status.get('remote_sha', 'unknown')}"
+        )
+        update_result = await asyncio.to_thread(
+            apply_git_update,
+            AUTO_UPDATE_REPO_DIR,
+            AUTO_UPDATE_REMOTE,
+            AUTO_UPDATE_BRANCH,
+        )
+        if not update_result.get("ok"):
+            print(
+                "[auto-update] failed to apply update: "
+                f"{update_result.get('stderr') or update_result.get('stdout') or 'unknown error'}"
+            )
+            return
+
+        print("[auto-update] update applied successfully, restarting bot process")
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+async def auto_update_loop():
+    """Periodically poll for git updates and restart when an update is applied."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await perform_auto_update_check()
+        except Exception as exc:
+            print(f"[auto-update] unexpected error: {exc}")
+        await asyncio.sleep(AUTO_UPDATE_INTERVAL_SECONDS)
+
 # =====================================================
 # Ready Event (register persistent views, sync commands)
 # =====================================================
 
 @bot.event
 async def on_ready():
+    global auto_update_task
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is in {len(bot.guilds)} guilds')
+
+    migration_summary = migrate_legacy_json_files()
+    if migration_summary["migrated"]:
+        print(
+            "[storage] migrated legacy JSON files into SQLite: "
+            + ", ".join(migration_summary["migrated"])
+        )
+    for path, error in migration_summary["errors"].items():
+        print(f"[storage] failed to migrate {path}: {error}")
 
     load_reaction_roles()
     load_ticket_data()
@@ -1709,6 +2004,7 @@ async def on_ready():
     load_auto_replies()
     load_giveaways()
     load_script_triggers()
+    await start_script_manager_api()
 
     for message_id, data in list(giveaways.items()):
         if data.get("ended"):
@@ -1731,6 +2027,15 @@ async def on_ready():
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+    if AUTO_UPDATE_ENABLED and auto_update_task is None:
+        auto_update_task = asyncio.create_task(auto_update_loop())
+        print(
+            "[auto-update] enabled "
+            f"(interval={AUTO_UPDATE_INTERVAL_SECONDS}s, remote={AUTO_UPDATE_REMOTE}, branch={AUTO_UPDATE_BRANCH})"
+        )
+    elif not AUTO_UPDATE_ENABLED:
+        print("[auto-update] disabled (set SMOKEBOT_AUTO_UPDATE=true to enable)")
 
 # =====================================================
 # Ticket System (dynamic categories + ephemeral confirmations)
@@ -2964,6 +3269,19 @@ async def dispatch_script_triggers_for_event(
     elif reaction:
         channel_id = reaction.message.channel.id
 
+    scheduled_tasks: List[asyncio.Task] = []
+
+    def _log_script_task_result(task: asyncio.Task, trigger_name: str):
+        try:
+            task.result()
+        except Exception:
+            logger.exception(
+                "Unhandled exception in script task '%s' for event '%s' in guild %s",
+                trigger_name,
+                event_name,
+                guild.id if guild else "unknown",
+            )
+
     for name, entry in guild_triggers.items():
         if not entry.get("enabled", True):
             continue
@@ -3003,17 +3321,24 @@ async def dispatch_script_triggers_for_event(
             if not match:
                 continue
 
-        await run_script_trigger(
-            name,
-            entry,
-            guild=guild,
-            match=match,
-            event_name=event_name,
-            message=message,
-            reaction=reaction,
-            user=user,
-            member=member,
+        task = asyncio.create_task(
+            run_script_trigger(
+                name,
+                entry,
+                guild=guild,
+                match=match,
+                event_name=event_name,
+                message=message,
+                reaction=reaction,
+                user=user,
+                member=member,
+            )
         )
+        task.add_done_callback(lambda t, trigger_name=name: _log_script_task_result(t, trigger_name))
+        scheduled_tasks.append(task)
+
+    if scheduled_tasks:
+        await asyncio.sleep(0)
 
 
 @bot.event
@@ -3744,6 +4069,10 @@ async def help_mod(interaction: discord.Interaction):
 # =====================================================
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
     token = load_token()
     if token:
         bot.run(token)
