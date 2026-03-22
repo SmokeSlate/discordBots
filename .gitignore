@@ -2,3 +2,5 @@ node_modules/
 **/node_modules/**
 SmokeBot/token.txt
 SmokeBot/*.json
+*/__pycache__/*
+

@@ -17,6 +17,8 @@ import os
 import random
 import re
 import traceback
+import urllib.error
+import urllib.request
 from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 
@@ -1012,6 +1014,14 @@ async def run_script_trigger(
     source_channel = message.channel if message else (reaction.message.channel if reaction else None)
     source_author = message.author if message else user
     source_content = message.content if message else ""
+    referenced_message = None
+    if message and message.reference and message.reference.message_id:
+        referenced_message = getattr(message.reference, "resolved", None)
+        if referenced_message is None and source_channel is not None:
+            try:
+                referenced_message = await source_channel.fetch_message(message.reference.message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                referenced_message = None
 
     async def _send_async(content: str, channel_id: Optional[int] = None):
         target = source_channel
@@ -1362,6 +1372,81 @@ async def run_script_trigger(
         except discord.HTTPException:
             return None
 
+    async def _http_request_async(
+        url: str,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        body: Optional[str] = None,
+        json_body=None,
+        timeout: int = 15,
+    ):
+        target_url = str(url or "").strip()
+        if not target_url:
+            return {"ok": False, "status": 0, "text": "", "json": None, "headers": {}, "error": "Missing URL"}
+
+        request_headers = {}
+        if isinstance(headers, dict):
+            request_headers = {str(key): str(value) for key, value in headers.items()}
+
+        payload_bytes = None
+        if json_body is not None:
+            request_headers.setdefault("Content-Type", "application/json")
+            payload_bytes = json.dumps(json_body).encode("utf-8")
+        elif body is not None:
+            payload_bytes = str(body).encode("utf-8")
+
+        try:
+            timeout_seconds = max(1, int(timeout))
+        except (TypeError, ValueError):
+            timeout_seconds = 15
+
+        def _run_request():
+            request = urllib.request.Request(
+                target_url,
+                data=payload_bytes,
+                headers=request_headers,
+                method=str(method or "GET").upper(),
+            )
+            response_text = ""
+            response_status = 0
+            response_headers = {}
+
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    response_status = getattr(response, "status", None) or response.getcode() or 0
+                    response_headers = dict(response.headers.items())
+                    response_text = response.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as exc:
+                response_status = exc.code or 0
+                response_headers = dict(exc.headers.items()) if exc.headers else {}
+                response_text = exc.read().decode("utf-8", errors="replace")
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "text": "",
+                    "json": None,
+                    "headers": {},
+                    "error": str(exc),
+                }
+
+            parsed_json = None
+            if response_text:
+                try:
+                    parsed_json = json.loads(response_text)
+                except json.JSONDecodeError:
+                    parsed_json = None
+
+            return {
+                "ok": 200 <= response_status < 300,
+                "status": response_status,
+                "text": response_text,
+                "json": parsed_json,
+                "headers": response_headers,
+            }
+
+        return await asyncio.to_thread(_run_request)
+
     def _schedule(coro):
         return asyncio.create_task(coro)
 
@@ -1471,6 +1556,16 @@ async def run_script_trigger(
     def remove_role(member_id: int, role_id: int, reason: str = "No reason provided"):
         return _schedule(_remove_role_async(member_id, role_id, reason))
 
+    def http_request(
+        url: str,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        body: Optional[str] = None,
+        json_body=None,
+        timeout: int = 15,
+    ):
+        return _schedule(_http_request_async(url, method, headers, body, json_body, timeout))
+
     safe_builtins = {
         "str": str,
         "int": int,
@@ -1511,7 +1606,9 @@ async def run_script_trigger(
         "set_slowmode": set_slowmode,
         "add_role": add_role,
         "remove_role": remove_role,
+        "http_request": http_request,
         "message": message,
+        "referenced_message": referenced_message,
         "author": source_author,
         "channel": source_channel,
         "guild": guild,
@@ -2792,7 +2889,8 @@ async def script_docs(interaction: discord.Interaction):
             "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
             "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
             "`dm(user_id, content)` • DM a user\n"
-            "`search_messages(query=None, limit=50, from_user_id=None, include_bots=True, attachments_only=False)` • Search recent channel history"
+            "`search_messages(query=None, limit=50, from_user_id=None, include_bots=True, attachments_only=False)` • Search recent channel history\n"
+            "`http_request(url, method='GET', headers=None, body=None, json_body=None, timeout=15)` • Make an HTTP request"
         ),
         inline=False,
     )
@@ -2822,6 +2920,7 @@ async def script_docs(interaction: discord.Interaction):
         name="Context variables",
         value=(
             "`message` • Trigger message\n"
+            "`referenced_message` • Replied-to message for `reply` events\n"
             "`author` • Message author\n"
             "`channel` • Message channel\n"
             "`guild` • Message guild\n"
