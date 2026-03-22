@@ -3,4 +3,4 @@ node_modules/
 SmokeBot/token.txt
 SmokeBot/*.json
 */__pycache__/*
-
+docs/assets/tailwind.css

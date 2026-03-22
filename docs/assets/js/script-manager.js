@@ -1,7 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
   const BOT_API_BASE = (window.SMOKEBOT_API_BASE || "https://botapi.sm0ke.org").replace(/\/$/, "");
   const DISCORD_CLIENT_ID = "1375925201191178300";
-  const TOKEN_STORAGE_KEY = "smokebot-discord-access-token-v1";
+  const TOKEN_STORAGE_KEY = "smokebot-discord-access-token-v2";
   const SELECTED_GUILD_STORAGE_KEY = "smokebot-selected-guild-v1";
 
   const configForm = document.getElementById("api-config-form");
@@ -76,14 +76,17 @@ document.addEventListener("DOMContentLoaded", () => {
     status.classList.toggle("text-green-400", !isError);
   };
 
-  const getTokenFromHash = () => {
+  const getOAuthResultFromHash = () => {
     const hash = window.location.hash.replace(/^#/, "");
     if (!hash) {
-      return "";
+      return { accessToken: "", scope: "" };
     }
 
     const params = new URLSearchParams(hash);
-    return params.get("access_token") || "";
+    return {
+      accessToken: params.get("access_token") || "",
+      scope: params.get("scope") || "",
+    };
   };
 
   const getStoredToken = () => localStorage.getItem(TOKEN_STORAGE_KEY) || "";
@@ -114,6 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
     authUrl.searchParams.set("response_type", "token");
     authUrl.searchParams.set("redirect_uri", oauthRedirectUri);
     authUrl.searchParams.set("scope", "identify guilds");
+    authUrl.searchParams.set("prompt", "consent");
     window.location.href = authUrl.toString();
   };
 
@@ -134,6 +138,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const json = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (
+        response.status === 401 &&
+        (json.error === "Discord authentication failed" || json.error === "Unauthorized")
+      ) {
+        setToken("");
+        throw new Error("Discord sign-in expired or is missing required access. Sign in again.");
+      }
       throw new Error(json.error || `Request failed (${response.status})`);
     }
     return json;
@@ -448,9 +459,22 @@ document.addEventListener("DOMContentLoaded", () => {
   (async () => {
     setFormEnabled(false);
 
-    const tokenFromHash = getTokenFromHash();
-    if (tokenFromHash) {
-      setToken(tokenFromHash);
+    const oauthResult = getOAuthResultFromHash();
+    if (oauthResult.accessToken) {
+      const grantedScopes = new Set(
+        oauthResult.scope
+          .split(" ")
+          .map((scope) => scope.trim())
+          .filter(Boolean),
+      );
+      if (!grantedScopes.has("guilds")) {
+        setToken("");
+        setStatus('Discord did not grant the required "guilds" scope. Sign in again.', true);
+        history.replaceState({}, document.title, oauthRedirectUri);
+        return;
+      }
+
+      setToken(oauthResult.accessToken);
       history.replaceState({}, document.title, oauthRedirectUri);
     }
 

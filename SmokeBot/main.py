@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -57,6 +58,7 @@ intents.reactions = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 logger = logging.getLogger("smokebot")
 script_api_runner: Optional[web.AppRunner] = None
+script_api_sites: List[web.BaseSite] = []
 script_api_lock = asyncio.Lock()
 discord_token_cache: Dict[str, Tuple[float, List[dict]]] = {}
 
@@ -946,6 +948,19 @@ def _script_api_response(request: web.Request, payload: Any, status: int = 200) 
     return web.json_response(payload, status=status, headers=_script_api_response_headers(request))
 
 
+def _build_script_api_ssl_context() -> Optional[ssl.SSLContext]:
+    cert_path = os.getenv("SCRIPT_MANAGER_API_SSL_CERT", "").strip()
+    key_path = os.getenv("SCRIPT_MANAGER_API_SSL_KEY", "").strip()
+    if not cert_path and not key_path:
+        return None
+    if not cert_path or not key_path:
+        raise RuntimeError("Both SCRIPT_MANAGER_API_SSL_CERT and SCRIPT_MANAGER_API_SSL_KEY must be set for HTTPS.")
+
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    return ssl_context
+
+
 def _script_api_bot_has_guild(guild_id: str) -> bool:
     try:
         guild_int = int(guild_id)
@@ -984,10 +999,19 @@ async def _discord_get_user_guilds(access_token: str) -> List[dict]:
             headers={"Authorization": f"Bearer {access_token}"},
             method="GET",
         )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            parsed = json.loads(body)
-            return parsed if isinstance(parsed, list) else []
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                parsed = json.loads(body)
+                return parsed if isinstance(parsed, list) else []
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            logger.warning(
+                "Discord guild lookup failed with status %s: %s",
+                exc.code,
+                body or "<empty body>",
+            )
+            raise
 
     guilds = await asyncio.to_thread(_request)
     discord_token_cache[access_token] = (now + 30, guilds)
@@ -1151,7 +1175,7 @@ async def script_api_list_manageable_guilds(request: web.Request) -> web.Respons
 
 
 async def start_script_manager_api():
-    global script_api_runner
+    global script_api_runner, script_api_sites
     if script_api_runner is not None:
         return
 
@@ -1167,11 +1191,26 @@ async def start_script_manager_api():
 
     script_api_runner = web.AppRunner(app)
     await script_api_runner.setup()
-    host = os.getenv("SCRIPT_MANAGER_API_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    hosts_raw = os.getenv("SCRIPT_MANAGER_API_HOST", "0.0.0.0,::").strip() or "0.0.0.0,::"
+    hosts = [host.strip() for host in hosts_raw.split(",") if host.strip()]
     port = int(os.getenv("SCRIPT_MANAGER_API_PORT", "8080"))
-    site = web.TCPSite(script_api_runner, host=host, port=port)
-    await site.start()
-    logger.info("Script manager API listening on http://%s:%s", host, port)
+    ssl_context = _build_script_api_ssl_context()
+    scheme = "https" if ssl_context is not None else "http"
+    started_hosts: List[str] = []
+
+    for host in hosts:
+        try:
+            site = web.TCPSite(script_api_runner, host=host, port=port, ssl_context=ssl_context)
+            await site.start()
+            script_api_sites.append(site)
+            started_hosts.append(host)
+        except OSError:
+            logger.exception("Failed to bind script manager API on %s://%s:%s", scheme, host, port)
+
+    if not started_hosts:
+        raise RuntimeError(f"Failed to bind script manager API on any configured host for port {port}")
+
+    logger.info("Script manager API listening on %s port %s via hosts: %s", scheme, port, ", ".join(started_hosts))
 
 
 def script_guild_allowed(guild: Optional[discord.Guild]) -> bool:
