@@ -2104,10 +2104,18 @@ async def run_script_trigger(
             }
         )
 
-    locals_dict: Dict[str, object] = {}
-
     try:
-        exec(code, globals_dict, locals_dict)
+        # Use one shared namespace so top-level defs remain visible to
+        # async tasks/functions created by user scripts.
+        exec(code, globals_dict, globals_dict)
+        script_entry = globals_dict.get("__script_async_entry__")
+        if script_entry is not None:
+            if asyncio.iscoroutine(script_entry) or isinstance(script_entry, asyncio.Future):
+                await script_entry
+            elif callable(script_entry):
+                result = script_entry()
+                if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                    await result
     except Exception as exc:
         logger.exception("Error running script trigger '%s' in guild %s", name, guild.id)
         try:

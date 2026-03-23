@@ -20,7 +20,7 @@
     <link rel="stylesheet" href="/assets/tailwind.css" />
     <link rel="stylesheet" href="/assets/css/smokebot.css" />
   </head>
-  <body class="min-h-screen bg-black text-white">
+  <body class="min-h-screen bg-black text-white scripts-page">
     <nav class="fixed top-0 left-0 right-0 z-50">
       <div class="site-gutter nav-bar bg-black bg-opacity-90 backdrop-blur-sm">
         <div class="flex justify-between items-center w-full">
@@ -92,185 +92,171 @@
     </nav>
 
     <main id="top" class="main-content min-h-screen">
-      <section class="retro-section">
-        <div class="section-shell hero-grid">
-          <div class="hero-stack">
-            <div class="hero-badge">Script tooling</div>
-            <h1 class="hero-title font-bold text-white tracking-tight">Script manager</h1>
-            <p class="hero-subtitle font-mono">
-              Connect directly to the hosted SmokeBot service and manage script
-              triggers for your server.
-            </p>
-            <p class="hero-copy">
-              Log in with Discord, choose your server, and manage script
-              triggers. No API key or manual server ID entry is required for
-              normal users.
-            </p>
-            <p id="api-status" class="text-sm text-green-400">Sign in with Discord to begin.</p>
-          </div>
-          <div class="rail">
-            <div class="band">
-              <h3>Supported events</h3>
-              <p class="text-subtle">
-                message, message_all, reply, reaction_add, reaction_remove,
-                member_join, member_leave
+      <section class="retro-section section-spacing">
+        <div class="section-shell">
+          <div id="login-gate" class="manager-panel manager-panel--login">
+            <div class="section-header manager-panel__header">
+              <div class="eyebrow">Access</div>
+              <h2 class="text-3xl md:text-4xl font-bold text-white">Sign in to open the workspace</h2>
+              <p>Authenticate with Discord first. The editor and server data stay hidden until you are signed in.</p>
+            </div>
+            <div class="manager-login-card">
+              <p id="login-status" class="manager-login-status text-sm text-green-400">
+                Sign in with Discord to begin.
+              </p>
+              <div class="hero-actions manager-login-actions">
+                <button type="button" id="discord-login" class="btn-retro hover-crt">
+                  Sign in with Discord
+                </button>
+              </div>
+              <p class="text-subtle text-sm manager-tip">
+                After sign-in, the workspace opens and this access panel disappears.
               </p>
             </div>
-            <div class="band">
-              <h3>Match types</h3>
-              <p class="text-subtle">contains, exact, regex</p>
-            </div>
           </div>
         </div>
       </section>
 
-      <section class="retro-section section-spacing border-t border-gray-900">
-        <div class="section-shell">
-          <div class="section-header">
-            <div class="eyebrow">Connection</div>
-            <h2 class="text-3xl md:text-4xl font-bold text-white">Sign in and choose a server</h2>
-            <p>Authenticate with Discord and select one of your manageable servers.</p>
-            <div class="section-divider"></div>
-          </div>
-          <form id="api-config-form" class="space-y-4 band">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <section id="workspace-gate" class="retro-section section-spacing border-t border-gray-900 hidden">
+        <div class="section-shell manager-workspace">
+          <section class="manager-panel manager-panel--session">
+            <form id="api-config-form" class="space-y-4 manager-connect-form">
+              <div class="manager-session-grid">
+                <label class="flex flex-col gap-2">
+                  <span>Signed in account</span>
+                  <input
+                    id="discord_user"
+                    class="bg-black border border-gray-700 p-3 text-white"
+                    placeholder="Not signed in"
+                    readonly
+                  />
+                </label>
+                <label class="flex flex-col gap-2">
+                  <span>Server</span>
+                  <select id="guild_id" class="bg-black border border-gray-700 p-3 text-white">
+                    <option value="">Select a server</option>
+                  </select>
+                </label>
+                <div class="manager-session-actions">
+                  <button type="submit" class="btn-retro secondary hover-crt">
+                    Use selected server
+                  </button>
+                  <button type="button" id="refresh-list" class="btn-retro secondary hover-crt">
+                    Refresh
+                  </button>
+                  <button type="button" id="discord-logout" class="btn-retro secondary hover-crt">
+                    Log out
+                  </button>
+                </div>
+              </div>
+              <p class="text-subtle text-sm manager-tip">
+                Tip: if a server is missing, confirm you have "Manage Server"
+                permission and that scripts are enabled for that guild.
+              </p>
+              <p id="session-status" class="manager-session-status text-sm text-green-400">
+                Choose a server to load scripts.
+              </p>
+            </form>
+          </section>
+
+          <section class="manager-panel manager-panel--editor">
+            <div class="section-header manager-panel__header manager-panel__header--left">
+              <div class="eyebrow">Editor</div>
+              <h2 class="text-3xl md:text-4xl font-bold text-white">Create or update script trigger</h2>
+              <p>Define the match rule, scope it to channels if needed, and save directly to the bot.</p>
+            </div>
+
+            <form id="script-form" class="space-y-4 manager-script-form">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label class="flex flex-col gap-2">
+                  <span>Name</span>
+                  <input id="name" class="bg-black border border-gray-700 p-3 text-white" required />
+                </label>
+                <label class="flex flex-col gap-2">
+                  <span>Event</span>
+                  <select id="event" class="bg-black border border-gray-700 p-3 text-white">
+                    <option value="message">message</option>
+                    <option value="message_all">message_all</option>
+                    <option value="reply">reply</option>
+                    <option value="reaction_add">reaction_add</option>
+                    <option value="reaction_remove">reaction_remove</option>
+                    <option value="member_join">member_join</option>
+                    <option value="member_leave">member_leave</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label class="flex flex-col gap-2">
+                  <span>Pattern</span>
+                  <input id="pattern" class="bg-black border border-gray-700 p-3 text-white" />
+                </label>
+                <label class="flex flex-col gap-2">
+                  <span>Match type</span>
+                  <select id="match_type" class="bg-black border border-gray-700 p-3 text-white">
+                    <option value="contains">contains</option>
+                    <option value="exact">exact</option>
+                    <option value="regex">regex</option>
+                  </select>
+                </label>
+              </div>
               <label class="flex flex-col gap-2">
-                <span>Signed in account</span>
+                <span>Quick template</span>
+                <select id="quick_template" class="bg-black border border-gray-700 p-3 text-white">
+                  <option value="">Start from blank</option>
+                  <option value="send_message">Send message</option>
+                  <option value="auto_react">Auto react</option>
+                  <option value="mod_ping">Ping staff role</option>
+                </select>
+              </label>
+              <label class="flex flex-col gap-2">
+                <span>Allowed channels (comma-separated IDs, optional)</span>
                 <input
-                  id="discord_user"
+                  id="channel_ids"
                   class="bg-black border border-gray-700 p-3 text-white"
-                  placeholder="Not signed in"
-                  readonly
+                  placeholder="1234, 4567"
                 />
               </label>
-              <label class="flex flex-col gap-2">
-                <span>Server</span>
-                <select id="guild_id" class="bg-black border border-gray-700 p-3 text-white">
-                  <option value="">Select a server</option>
-                </select>
+              <label class="flex items-center gap-3 manager-toggle">
+                <input id="enabled" type="checkbox" checked />
+                <span>Enabled</span>
               </label>
-            </div>
-            <div class="hero-actions">
-              <button type="button" id="discord-login" class="btn-retro hover-crt">
-                Sign in with Discord
-              </button>
-              <button type="submit" class="btn-retro secondary hover-crt">
-                Use selected server
-              </button>
-              <button type="button" id="refresh-list" class="btn-retro secondary hover-crt">
-                Refresh
-              </button>
-              <button type="button" id="discord-logout" class="btn-retro secondary hover-crt">
-                Log out
-              </button>
-            </div>
-            <p class="text-subtle text-sm">
-              Tip: if your server is missing, make sure you have "Manage Server"
-              permission and scripts are enabled for that guild.
-            </p>
-          </form>
-        </div>
-      </section>
+              <label class="flex flex-col gap-2">
+                <span>Python code</span>
+                <textarea
+                  id="code"
+                  rows="12"
+                  class="bg-black border border-gray-700 p-3 text-white font-mono"
+                  required
+                ></textarea>
+              </label>
+              <div class="hero-actions">
+                <button type="submit" class="btn-retro hover-crt">Save trigger</button>
+                <button type="button" id="reset-form" class="btn-retro secondary hover-crt">
+                  Reset form
+                </button>
+              </div>
+              <p id="editor-status" class="manager-editor-status text-sm text-green-400">
+                Select a server to start editing triggers.
+              </p>
+            </form>
+          </section>
 
-      <section class="retro-section section-spacing border-t border-gray-900">
-        <div class="section-shell">
-          <div class="section-header">
-            <div class="eyebrow">Editor</div>
-            <h2 class="text-3xl md:text-4xl font-bold text-white">Create or update script trigger</h2>
-            <p>Fill out the trigger details and save directly to the hosted bot.</p>
-            <div class="section-divider"></div>
-          </div>
-
-          <form id="script-form" class="space-y-4">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label class="flex flex-col gap-2">
-                <span>Name</span>
-                <input id="name" class="bg-black border border-gray-700 p-3 text-white" required />
-              </label>
-              <label class="flex flex-col gap-2">
-                <span>Event</span>
-                <select id="event" class="bg-black border border-gray-700 p-3 text-white">
-                  <option value="message">message</option>
-                  <option value="message_all">message_all</option>
-                  <option value="reply">reply</option>
-                  <option value="reaction_add">reaction_add</option>
-                  <option value="reaction_remove">reaction_remove</option>
-                  <option value="member_join">member_join</option>
-                  <option value="member_leave">member_leave</option>
-                </select>
-              </label>
+          <section class="manager-panel manager-panel--library">
+            <div class="section-header manager-panel__header manager-panel__header--left">
+              <div class="eyebrow">Stored triggers</div>
+              <h2 class="text-3xl md:text-4xl font-bold text-white">Guild script list</h2>
+              <p>Filter the current server’s triggers, then load one into the editor or remove it.</p>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label class="flex flex-col gap-2">
-                <span>Pattern</span>
-                <input id="pattern" class="bg-black border border-gray-700 p-3 text-white" />
-              </label>
-              <label class="flex flex-col gap-2">
-                <span>Match type</span>
-                <select id="match_type" class="bg-black border border-gray-700 p-3 text-white">
-                  <option value="contains">contains</option>
-                  <option value="exact">exact</option>
-                  <option value="regex">regex</option>
-                </select>
-              </label>
-            </div>
-            <label class="flex flex-col gap-2">
-              <span>Quick template</span>
-              <select id="quick_template" class="bg-black border border-gray-700 p-3 text-white">
-                <option value="">Start from blank</option>
-                <option value="send_message">Send message</option>
-                <option value="auto_react">Auto react</option>
-                <option value="mod_ping">Ping staff role</option>
-              </select>
-            </label>
-            <label class="flex flex-col gap-2">
-              <span>Allowed channels (comma-separated IDs, optional)</span>
+            <label class="flex flex-col gap-2 mb-4">
+              <span>Search triggers</span>
               <input
-                id="channel_ids"
+                id="script_search"
                 class="bg-black border border-gray-700 p-3 text-white"
-                placeholder="1234, 4567"
+                placeholder="Filter by name, event, or pattern..."
               />
             </label>
-            <label class="flex items-center gap-3">
-              <input id="enabled" type="checkbox" checked />
-              <span>Enabled</span>
-            </label>
-            <label class="flex flex-col gap-2">
-              <span>Python code</span>
-              <textarea
-                id="code"
-                rows="10"
-                class="bg-black border border-gray-700 p-3 text-white font-mono"
-                required
-              ></textarea>
-            </label>
-            <div class="hero-actions">
-              <button type="submit" class="btn-retro hover-crt">Save trigger</button>
-              <button type="button" id="reset-form" class="btn-retro secondary hover-crt">
-                Reset form
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-
-      <section class="retro-section section-spacing border-t border-gray-900">
-        <div class="section-shell">
-          <div class="section-header">
-            <div class="eyebrow">Stored triggers</div>
-            <h2 class="text-3xl md:text-4xl font-bold text-white">Guild script list</h2>
-            <p>Click Edit to load an entry into the form. Delete removes it from the bot.</p>
-            <div class="section-divider"></div>
-          </div>
-          <label class="flex flex-col gap-2 mb-4">
-            <span>Search triggers</span>
-            <input
-              id="script_search"
-              class="bg-black border border-gray-700 p-3 text-white"
-              placeholder="Filter by name, event, or pattern..."
-            />
-          </label>
-          <div id="script-list" class="space-y-3"></div>
+            <div id="script-list" class="space-y-3 manager-script-list"></div>
+          </section>
         </div>
       </section>
     </main>

@@ -5,6 +5,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const SELECTED_GUILD_STORAGE_KEY = "smokebot-selected-guild-v1";
 
   const configForm = document.getElementById("api-config-form");
+  const loginGate = document.getElementById("login-gate");
+  const workspaceGate = document.getElementById("workspace-gate");
   const scriptForm = document.getElementById("script-form");
   const list = document.getElementById("script-list");
   const refreshBtn = document.getElementById("refresh-list");
@@ -13,7 +15,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const logoutBtn = document.getElementById("discord-logout");
   const guildSelect = document.getElementById("guild_id");
   const userField = document.getElementById("discord_user");
-  const status = document.getElementById("api-status");
+  const loginStatus = document.getElementById("login-status");
+  const sessionStatus = document.getElementById("session-status");
+  const editorStatus = document.getElementById("editor-status");
   const templateSelect = document.getElementById("quick_template");
   const searchInput = document.getElementById("script_search");
 
@@ -29,6 +33,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (
     !configForm ||
+    !loginGate ||
+    !workspaceGate ||
     !scriptForm ||
     !list ||
     !refreshBtn ||
@@ -37,7 +43,9 @@ document.addEventListener("DOMContentLoaded", () => {
     !logoutBtn ||
     !guildSelect ||
     !userField ||
-    !status ||
+    !loginStatus ||
+    !sessionStatus ||
+    !editorStatus ||
     !templateSelect ||
     !searchInput
   ) {
@@ -70,10 +78,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const oauthRedirectUri = `${window.location.origin}${window.location.pathname}`;
 
-  const setStatus = (message, isError = false) => {
-    status.textContent = message;
-    status.classList.toggle("text-red-400", isError);
-    status.classList.toggle("text-green-400", !isError);
+  const applyStatus = (element, message, isError = false) => {
+    element.textContent = message;
+    element.classList.toggle("text-red-400", isError);
+    element.classList.toggle("text-green-400", !isError);
+  };
+
+  const setLoginStatus = (message, isError = false) => {
+    applyStatus(loginStatus, message, isError);
+  };
+
+  const setSessionStatus = (message, isError = false) => {
+    applyStatus(sessionStatus, message, isError);
+  };
+
+  const setEditorStatus = (message, isError = false) => {
+    applyStatus(editorStatus, message, isError);
+  };
+
+  const setAllStatuses = (message, isError = false) => {
+    [loginStatus, sessionStatus, editorStatus].forEach((element) => {
+      element.textContent = message;
+      element.classList.toggle("text-red-400", isError);
+      element.classList.toggle("text-green-400", !isError);
+    });
   };
 
   const getOAuthResultFromHash = () => {
@@ -139,6 +167,9 @@ document.addEventListener("DOMContentLoaded", () => {
         (json.error === "Discord authentication failed" || json.error === "Unauthorized")
       ) {
         setToken("");
+        setSelectedGuild("");
+        resetWorkspace();
+        setAuthenticatedView(false);
         throw new Error("Discord sign-in expired or is missing required access. Sign in again.");
       }
       throw new Error(json.error || `Request failed (${response.status})`);
@@ -165,6 +196,20 @@ document.addEventListener("DOMContentLoaded", () => {
       element.disabled = !enabled;
     });
     searchInput.disabled = !enabled;
+  };
+
+  const setAuthenticatedView = (authenticated) => {
+    loginGate.classList.toggle("hidden", authenticated);
+    workspaceGate.classList.toggle("hidden", !authenticated);
+  };
+
+  const resetWorkspace = () => {
+    guildSelect.innerHTML = '<option value="">Select a server</option>';
+    userField.value = "";
+    cachedScripts = {};
+    resetForm();
+    renderList();
+    setFormEnabled(false);
   };
 
   const resetForm = () => {
@@ -269,7 +314,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const response = await apiRequest(`/api/script-triggers/${guildId}`);
     cachedScripts = response.triggers || {};
     renderList();
-    setStatus("Loaded scripts from hosted bot API.");
+    setSessionStatus("Loaded scripts from hosted bot API.");
+    setEditorStatus("Editing workspace is ready.");
   };
 
   const fetchIdentity = async () => {
@@ -306,7 +352,7 @@ document.addEventListener("DOMContentLoaded", () => {
       await fetchScripts();
       setFormEnabled(true);
     } catch (error) {
-      setStatus(error.message, true);
+      setSessionStatus(error.message, true);
     }
   });
 
@@ -322,9 +368,9 @@ document.addEventListener("DOMContentLoaded", () => {
       cachedScripts = {};
       renderList();
       setFormEnabled(false);
-      setStatus("Choose a server to load scripts.");
+      setSessionStatus("Choose a server to load scripts.");
     } catch (error) {
-      setStatus(error.message, true);
+      setSessionStatus(error.message, true);
     }
   });
 
@@ -335,13 +381,9 @@ document.addEventListener("DOMContentLoaded", () => {
   logoutBtn.addEventListener("click", () => {
     setToken("");
     setSelectedGuild("");
-    guildSelect.innerHTML = '<option value="">Select a server</option>';
-    userField.value = "";
-    cachedScripts = {};
-    resetForm();
-    renderList();
-    setFormEnabled(false);
-    setStatus("Signed out.");
+    resetWorkspace();
+    setAuthenticatedView(false);
+    setAllStatuses("Signed out.");
   });
 
   guildSelect.addEventListener("change", () => {
@@ -353,7 +395,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const name = fields.name.value.trim();
     if (!name) {
-      setStatus("Script name is required.", true);
+      setEditorStatus("Script name is required.", true);
       return;
     }
 
@@ -381,9 +423,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       editingName = name;
       await fetchScripts();
-      setStatus(`Saved script trigger "${name}".`);
+      setEditorStatus(`Saved script trigger "${name}".`);
     } catch (error) {
-      setStatus(error.message, true);
+      setEditorStatus(error.message, true);
     }
   });
 
@@ -422,9 +464,9 @@ document.addEventListener("DOMContentLoaded", () => {
           resetForm();
         }
         await fetchScripts();
-        setStatus(`Deleted script trigger "${name}".`);
+        setEditorStatus(`Deleted script trigger "${name}".`);
       } catch (error) {
-        setStatus(error.message, true);
+        setEditorStatus(error.message, true);
       }
     }
   });
@@ -453,14 +495,17 @@ document.addEventListener("DOMContentLoaded", () => {
   renderList();
 
   (async () => {
+    setAuthenticatedView(false);
     setFormEnabled(false);
 
     const oauthResult = getOAuthResultFromHash();
     const oauthError = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("oauth_error");
     if (oauthError) {
       setToken("");
+      setSelectedGuild("");
+      resetWorkspace();
       history.replaceState({}, document.title, oauthRedirectUri);
-      setStatus("Discord sign-in failed. Sign in again.", true);
+      setLoginStatus("Discord sign-in failed. Sign in again.", true);
       return;
     }
 
@@ -473,7 +518,9 @@ document.addEventListener("DOMContentLoaded", () => {
       );
       if (!grantedScopes.has("guilds")) {
         setToken("");
-        setStatus('Discord did not grant the required "guilds" scope. Sign in again.', true);
+        setSelectedGuild("");
+        resetWorkspace();
+        setLoginStatus('Discord did not grant the required "guilds" scope. Sign in again.', true);
         history.replaceState({}, document.title, oauthRedirectUri);
         return;
       }
@@ -483,21 +530,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (!getStoredToken()) {
-      setStatus("Sign in with Discord to begin.");
+      resetWorkspace();
+      setLoginStatus("Sign in with Discord to begin.");
       return;
     }
 
     try {
       await fetchIdentity();
+      setAuthenticatedView(true);
       await fetchManageableGuilds();
       if (guildSelect.value) {
         await fetchScripts();
         setFormEnabled(true);
       } else {
-        setStatus("Choose a server to load scripts.");
+        setSessionStatus("Choose a server to load scripts.");
       }
     } catch (error) {
-      setStatus(error.message, true);
+      setAuthenticatedView(false);
+      setLoginStatus(error.message, true);
     }
   })();
 });

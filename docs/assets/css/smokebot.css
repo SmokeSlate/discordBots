@@ -1024,3 +1024,153 @@
     flex-wrap: wrap;
     gap: 0.75rem;
 }
+
+/* =====================================================
+   Script Manager Page
+   ===================================================== */
+
+.manager-panel {
+    margin-top: clamp(1.25rem, 3vw, 1.8rem);
+    padding: clamp(1.15rem, 3vw, 1.7rem);
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01)),
+        rgba(11, 11, 11, 0.94);
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+}
+
+.manager-workspace > .manager-panel {
+    margin-top: 0;
+}
+
+.manager-panel__header {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+}
+
+.manager-panel__header--left {
+    text-align: left;
+}
+
+.manager-panel__header--left .eyebrow {
+    margin-inline: 0;
+}
+
+.manager-panel__header--left p {
+    margin-left: 0;
+}
+
+.manager-connect-form,
+.manager-script-form {
+    display: grid;
+    gap: 1rem;
+}
+
+.manager-panel--login {
+    max-width: 760px;
+    margin-inline: auto;
+}
+
+.manager-login-card {
+    display: grid;
+    gap: 1rem;
+    justify-items: center;
+    text-align: center;
+    padding: clamp(1rem, 3vw, 1.5rem);
+    border-radius: 16px;
+    border: 1px solid rgba(252, 211, 77, 0.14);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.manager-login-status,
+.manager-session-status,
+.manager-editor-status {
+    margin: 0;
+    min-height: 1.5rem;
+}
+
+.manager-login-actions {
+    justify-content: center;
+}
+
+.manager-workspace {
+    display: grid;
+    gap: 1.5rem;
+}
+
+.manager-session-grid {
+    display: grid;
+    gap: 1rem;
+}
+
+@media (min-width: 980px) {
+    .manager-session-grid {
+        grid-template-columns: minmax(220px, 0.7fr) minmax(260px, 1fr) auto;
+        align-items: end;
+    }
+}
+
+.manager-session-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+@media (min-width: 1100px) {
+    .manager-workspace {
+        grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+        align-items: start;
+    }
+
+    .manager-panel--editor {
+        position: sticky;
+        top: calc(var(--header-height) + 1.5rem);
+    }
+}
+
+.manager-script-form input,
+.manager-script-form select,
+.manager-script-form textarea,
+.manager-connect-form input,
+.manager-connect-form select,
+.manager-script-list input {
+    border-radius: 12px;
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.72);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.manager-script-form input:focus,
+.manager-script-form select:focus,
+.manager-script-form textarea:focus,
+.manager-connect-form input:focus,
+.manager-connect-form select:focus,
+.manager-script-list input:focus {
+    outline: none;
+    border-color: rgba(252, 211, 77, 0.7);
+    box-shadow: 0 0 0 3px rgba(252, 211, 77, 0.12);
+    background: rgba(0, 0, 0, 0.9);
+}
+
+.manager-script-form textarea {
+    min-height: 360px;
+    resize: vertical;
+}
+
+.manager-toggle {
+    width: fit-content;
+    padding: 0.7rem 0.95rem;
+    border-radius: 999px;
+    border: 1px solid rgba(252, 211, 77, 0.22);
+    background: rgba(252, 211, 77, 0.06);
+}
+
+.manager-tip {
+    margin: 0;
+}
+
+.manager-script-list {
+    min-height: 220px;
+}
