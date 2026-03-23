@@ -15,16 +15,20 @@ SCRIPT_FILES=(
 cd "$BOT_DIR"
 
 echo "Stopping bot..."
+DID_KILL=0
 if [[ -f "$PID_FILE" ]]; then
   BOT_PID="$(cat "$PID_FILE")"
   if kill "$BOT_PID" 2>/dev/null; then
     echo "Bot stopped."
+    DID_KILL=1
   else
     echo "PID file existed but process was already gone."
   fi
   rm -f "$PID_FILE"
-else
-  echo "No PID file found, trying to stop any existing main.py process..."
+fi
+
+if [[ "$DID_KILL" != "1" ]]; then
+  echo "Trying to stop any existing main.py process..."
   pkill -f "python3 .*main.py" 2>/dev/null || true
 fi
 
