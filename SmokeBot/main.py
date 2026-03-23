@@ -61,7 +61,7 @@ logger = logging.getLogger("smokebot")
 script_api_runner: Optional[web.AppRunner] = None
 script_api_sites: List[web.BaseSite] = []
 script_api_lock = asyncio.Lock()
-discord_token_cache: Dict[str, Tuple[float, List[dict]]] = {}
+discord_token_cache: Dict[str, Tuple[float, dict]] = {}
 
 reaction_roles = {}
 ticket_data = {}
@@ -1031,7 +1031,7 @@ def _extract_discord_bearer_token(request: web.Request) -> str:
     return ""
 
 
-async def _discord_get_user_guilds(access_token: str) -> List[dict]:
+async def _discord_get_user_identity(access_token: str) -> dict:
     now = time.time()
     cached = discord_token_cache.get(access_token)
     if cached and cached[0] > now:
@@ -1039,7 +1039,7 @@ async def _discord_get_user_guilds(access_token: str) -> List[dict]:
 
     def _request():
         request = urllib.request.Request(
-            "https://discord.com/api/v10/users/@me/guilds",
+            "https://discord.com/api/v10/users/@me",
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
@@ -1051,36 +1051,60 @@ async def _discord_get_user_guilds(access_token: str) -> List[dict]:
             with urllib.request.urlopen(request, timeout=10) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 parsed = json.loads(body)
-                return parsed if isinstance(parsed, list) else []
+                return parsed if isinstance(parsed, dict) else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             logger.warning(
-                "Discord guild lookup failed with status %s: %s",
+                "Discord identity lookup failed with status %s: %s",
                 exc.code,
                 body or "<empty body>",
             )
             raise
 
-    guilds = await asyncio.to_thread(_request)
-    discord_token_cache[access_token] = (now + 30, guilds)
-    return guilds
+    identity = await asyncio.to_thread(_request)
+    discord_token_cache[access_token] = (now + 30, identity)
+    return identity
 
 
-async def _script_api_authorize_request(request: web.Request) -> Tuple[bool, Optional[str], List[dict]]:
+async def _script_api_get_member_for_guild(user_id: str, guild_id: str) -> Optional[discord.Member]:
+    try:
+        guild_int = int(guild_id)
+        user_int = int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+    guild = bot.get_guild(guild_int)
+    if guild is None:
+        return None
+
+    member = guild.get_member(user_int)
+    if member is not None:
+        return member
+
+    try:
+        return await guild.fetch_member(user_int)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+async def _script_api_authorize_request(request: web.Request) -> Tuple[bool, Optional[str], Optional[dict]]:
     access_token = _extract_discord_bearer_token(request)
     if access_token:
         try:
-            guilds = await _discord_get_user_guilds(access_token)
-            return True, None, guilds
+            identity = await _discord_get_user_identity(access_token)
+            user_id = str(identity.get("id") or "").strip()
+            if not user_id:
+                return False, "Discord authentication failed", None
+            return True, None, identity
         except Exception:
             logger.exception("Failed Discord OAuth validation for script manager request.")
-            return False, "Discord authentication failed", []
+            return False, "Discord authentication failed", None
 
     configured = os.getenv("SCRIPT_MANAGER_API_KEY", "").strip()
     provided = request.headers.get("X-API-Key", "").strip()
     if configured and provided == configured:
-        return True, None, []
-    return False, "Unauthorized", []
+        return True, None, None
+    return False, "Unauthorized", None
 
 
 async def _script_api_can_manage_guild(request: web.Request, guild_id: str) -> Tuple[bool, Optional[str]]:
@@ -1089,15 +1113,15 @@ async def _script_api_can_manage_guild(request: web.Request, guild_id: str) -> T
     if not _script_api_guild_allowed(guild_id):
         return False, "Script triggers are not enabled for this server"
 
-    authorized, error, guilds = await _script_api_authorize_request(request)
+    authorized, error, identity = await _script_api_authorize_request(request)
     if not authorized:
         return False, error or "Unauthorized"
 
-    if guilds:
-        matching = next((g for g in guilds if str(g.get("id")) == str(guild_id)), None)
-        if not matching:
+    if identity:
+        member = await _script_api_get_member_for_guild(str(identity.get("id") or ""), guild_id)
+        if member is None:
             return False, "You do not have access to this server"
-        if not _discord_has_manage_guild_permissions(matching):
+        if not (member.guild_permissions.administrator or member.guild_permissions.manage_guild):
             return False, "You need Manage Server permission"
 
     return True, None
@@ -1288,26 +1312,30 @@ async def script_api_delete_trigger(request: web.Request) -> web.Response:
 
 
 async def script_api_list_manageable_guilds(request: web.Request) -> web.Response:
-    authorized, error, guilds = await _script_api_authorize_request(request)
+    authorized, error, identity = await _script_api_authorize_request(request)
     if not authorized:
         return _script_api_response(request, {"error": error or "Unauthorized"}, status=401)
 
     manageable = []
-    for guild in guilds:
-        guild_id = str(guild.get("id") or "")
-        if not guild_id:
+    user_id = str((identity or {}).get("id") or "").strip()
+    for guild in bot.guilds:
+        guild_id = str(guild.id)
+        if not user_id:
             continue
         if not _script_api_bot_has_guild(guild_id):
             continue
         if not _script_api_guild_allowed(guild_id):
             continue
-        if not _discord_has_manage_guild_permissions(guild):
+        member = await _script_api_get_member_for_guild(user_id, guild_id)
+        if member is None:
+            continue
+        if not (member.guild_permissions.administrator or member.guild_permissions.manage_guild):
             continue
         manageable.append(
             {
                 "id": guild_id,
-                "name": guild.get("name") or guild_id,
-                "icon": guild.get("icon"),
+                "name": guild.name or guild_id,
+                "icon": str(guild.icon.url) if guild.icon else None,
             }
         )
 
