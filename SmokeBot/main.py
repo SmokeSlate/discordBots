@@ -1493,11 +1493,12 @@ async def run_script_trigger(
         source_author.id if source_author else None,
     )
     referenced_message = None
-    if message and message.reference and message.reference.message_id:
+    if message and message.reference:
         referenced_message = getattr(message.reference, "resolved", None)
-        if referenced_message is None and source_channel is not None:
+        reference_message_id = message.reference.message_id or getattr(referenced_message, "id", None)
+        if referenced_message is None and source_channel is not None and reference_message_id is not None:
             try:
-                referenced_message = await source_channel.fetch_message(message.reference.message_id)
+                referenced_message = await source_channel.fetch_message(reference_message_id)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 referenced_message = None
 
@@ -3601,7 +3602,14 @@ async def dispatch_script_triggers_for_event(
             if not match:
                 continue
         elif event_name == "reply":
-            if not message or not message.reference or not message.reference.message_id:
+            reference_message_id = (
+                message.reference.message_id
+                if message and message.reference and message.reference.message_id
+                else getattr(getattr(message.reference, "resolved", None), "id", None)
+                if message and message.reference
+                else None
+            )
+            if not message or not message.reference or reference_message_id is None:
                 continue
             match = trigger_match_text(entry, message.content)
             if not match:
@@ -3611,7 +3619,7 @@ async def dispatch_script_triggers_for_event(
                 name,
                 guild.id if guild else "unknown",
                 message.id if message else None,
-                message.reference.message_id if message and message.reference else None,
+                reference_message_id,
                 channel_id,
             )
         elif event_name == "reaction_add":
@@ -3653,6 +3661,16 @@ async def dispatch_script_triggers_for_event(
 async def on_message(message):
     is_bot_message = message.author.bot
     is_self_message = bot.user and message.author.id == bot.user.id
+
+    if message.guild and message.reference:
+        logger.info(
+            "Observed referenced message guild=%s message_id=%s reference_id=%s author_id=%s channel_id=%s",
+            message.guild.id,
+            message.id,
+            message.reference.message_id or getattr(getattr(message.reference, 'resolved', None), 'id', None),
+            message.author.id,
+            message.channel.id,
+        )
 
     # Pinned message reposting
     if not is_bot_message:
