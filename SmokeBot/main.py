@@ -1186,18 +1186,21 @@ async def script_auth_callback(request: web.Request) -> web.Response:
 
     form_body = urllib.parse.urlencode(
         {
-            "client_id": client_id,
-            "client_secret": client_secret,
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": _script_manager_callback_url(),
         }
     ).encode("utf-8")
+    basic_auth = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
 
     token_request = urllib.request.Request(
-        "https://discord.com/api/oauth2/token",
+        "https://discord.com/api/v10/oauth2/token",
         data=form_body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "SmokeBot Script Manager/1.0",
+        },
         method="POST",
     )
 
