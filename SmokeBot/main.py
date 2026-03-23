@@ -81,18 +81,6 @@ AUTO_UPDATE_REMOTE = os.getenv("SMOKEBOT_AUTO_UPDATE_REMOTE", "origin").strip() 
 AUTO_UPDATE_BRANCH = os.getenv("SMOKEBOT_AUTO_UPDATE_BRANCH", "main").strip() or "main"
 AUTO_UPDATE_REPO_DIR = os.getenv("SMOKEBOT_AUTO_UPDATE_REPO_DIR", ".").strip() or "."
 
-SUPPORT_BRIDGE_ENABLED = True
-SUPPORT_BRIDGE_CHANNEL_ID = 1441397893570232411
-SUPPORT_BRIDGE_DEBUG_CHANNEL_ID = 1403090423928586432
-SUPPORT_BRIDGE_API_BASE = "https://bsm-api.sm0ke.org"
-SUPPORT_BRIDGE_ADMIN_KEY = "2cbde912cd3bc69f2a82e4e39e592bdce5d18aafab71d24ab493ba5893a5b550"
-SUPPORT_BRIDGE_SUCCESS_REACTION = "✅"
-SUPPORT_BRIDGE_FAIL_REACTION = "⚠️"
-SUPPORT_BRIDGE_META_PATTERN = re.compile(
-    r"(?is)(?:^|\r?\n)\s*(?:-#\s*)?bss-chat\s+conversation=(\S+)\s+message=(\S+)(?:\s+role=(\S+))?(?=\s*$|\r?\n)"
-)
-recent_support_bridge_message_ids: Dict[int, float] = {}
-
 # =====================================================
 # Permissions Checkers
 # =====================================================
@@ -542,238 +530,6 @@ def build_reply_reference(message: discord.Message) -> Optional[discord.MessageR
         guild_id=ref.guild_id,
         fail_if_not_exists=False,
     )
-
-
-def support_bridge_strip_metadata(text: Optional[str]) -> str:
-    return SUPPORT_BRIDGE_META_PATTERN.sub("", str(text or "")).strip()
-
-
-def support_bridge_extract_metadata(text: Optional[str]) -> Optional[dict]:
-    match = SUPPORT_BRIDGE_META_PATTERN.search(str(text or ""))
-    if not match:
-        return None
-    return {
-        "conversation_id": match.group(1),
-        "message_id": match.group(2),
-        "role": match.group(3) or "user",
-    }
-
-
-def support_bridge_build_outbound_text(message: discord.Message) -> str:
-    base = support_bridge_strip_metadata(message.content or "")
-    attachment_urls = [str(item.url) for item in (message.attachments or []) if getattr(item, "url", None)]
-    if attachment_urls:
-        suffix = "\n".join(attachment_urls)
-        if base:
-            return f"{base}\n{suffix}".strip()
-        return suffix
-    return base
-
-
-async def support_bridge_http_request(
-    url: str,
-    *,
-    method: str = "GET",
-    headers: Optional[dict] = None,
-    body: Optional[str] = None,
-    json_body=None,
-    timeout: int = 15,
-) -> dict:
-    target_url = str(url or "").strip()
-    if not target_url:
-        return {"ok": False, "status": 0, "text": "", "json": None, "headers": {}, "error": "Missing URL"}
-
-    request_headers = {}
-    if isinstance(headers, dict):
-        request_headers = {str(key): str(value) for key, value in headers.items()}
-
-    payload_bytes = None
-    if json_body is not None:
-        request_headers.setdefault("Content-Type", "application/json")
-        payload_bytes = json.dumps(json_body).encode("utf-8")
-    elif body is not None:
-        payload_bytes = str(body).encode("utf-8")
-
-    try:
-        timeout_seconds = max(1, int(timeout))
-    except (TypeError, ValueError):
-        timeout_seconds = 15
-
-    def _run_request():
-        request = urllib.request.Request(
-            target_url,
-            data=payload_bytes,
-            headers=request_headers,
-            method=str(method or "GET").upper(),
-        )
-        response_text = ""
-        response_status = 0
-        response_headers = {}
-
-        try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                response_status = getattr(response, "status", None) or response.getcode() or 0
-                response_headers = dict(response.headers.items())
-                response_text = response.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            response_status = exc.code or 0
-            response_headers = dict(exc.headers.items()) if exc.headers else {}
-            response_text = exc.read().decode("utf-8", errors="replace")
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": 0,
-                "text": "",
-                "json": None,
-                "headers": {},
-                "error": str(exc),
-            }
-
-        parsed_json = None
-        if response_text:
-            try:
-                parsed_json = json.loads(response_text)
-            except json.JSONDecodeError:
-                parsed_json = None
-
-        return {
-            "ok": 200 <= response_status < 300,
-            "status": response_status,
-            "text": response_text,
-            "json": parsed_json,
-            "headers": response_headers,
-        }
-
-    return await asyncio.to_thread(_run_request)
-
-
-async def support_bridge_log(message: str):
-    logger.info("Support bridge log: %s", message)
-    channel = bot.get_channel(SUPPORT_BRIDGE_DEBUG_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(SUPPORT_BRIDGE_DEBUG_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return
-    try:
-        await channel.send(message[:1800])
-    except discord.HTTPException:
-        logger.exception("Failed sending support bridge log to debug channel")
-
-
-async def handle_support_reply_bridge(message: discord.Message) -> bool:
-    if not SUPPORT_BRIDGE_ENABLED:
-        return False
-    if not message.guild or not message.channel:
-        return False
-    if message.channel.id != SUPPORT_BRIDGE_CHANNEL_ID:
-        return False
-    if not message.reference:
-        return False
-    if message.author.bot:
-        return False
-    if bot.user and message.author.id == bot.user.id:
-        return False
-
-    now = time.time()
-    expired = [msg_id for msg_id, seen_at in recent_support_bridge_message_ids.items() if now - seen_at > 3600]
-    for msg_id in expired:
-        recent_support_bridge_message_ids.pop(msg_id, None)
-    if message.id in recent_support_bridge_message_ids:
-        logger.info("Skipping duplicate support bridge for message_id=%s", message.id)
-        return False
-
-    reference_message_id = message.reference.message_id or getattr(getattr(message.reference, "resolved", None), "id", None)
-    logger.info(
-        "Evaluating support bridge message_id=%s reference_id=%s author_id=%s channel_id=%s",
-        message.id,
-        reference_message_id,
-        message.author.id,
-        message.channel.id,
-    )
-
-    referenced_message = getattr(message.reference, "resolved", None)
-    if referenced_message is None and reference_message_id is not None:
-        try:
-            referenced_message = await message.channel.fetch_message(reference_message_id)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            referenced_message = None
-
-    if referenced_message is None:
-        await support_bridge_log(f"Support bridge failed: no referenced message for Discord message {message.id}")
-        try:
-            await message.add_reaction(SUPPORT_BRIDGE_FAIL_REACTION)
-        except discord.HTTPException:
-            pass
-        return False
-
-    metadata = support_bridge_extract_metadata(referenced_message.content or "")
-    if not metadata:
-        await support_bridge_log(
-            f"Support bridge skipped: referenced message {referenced_message.id} has no metadata for Discord message {message.id}"
-        )
-        return False
-
-    text = support_bridge_build_outbound_text(message)
-    if not text:
-        await support_bridge_log(f"Support bridge failed: empty outbound text for Discord message {message.id}")
-        try:
-            await message.add_reaction(SUPPORT_BRIDGE_FAIL_REACTION)
-        except discord.HTTPException:
-            pass
-        return False
-
-    avatar = ""
-    if getattr(message.author, "display_avatar", None) is not None:
-        avatar = str(message.author.display_avatar.url or "")
-
-    payload = {
-        "conversationId": metadata["conversation_id"],
-        "senderId": f"discord:{message.author.id}",
-        "senderName": message.author.display_name or str(message.author),
-        "senderAvatar": avatar,
-        "role": "support",
-        "text": text,
-        "skipWebhook": True,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "X-Admin-Key": SUPPORT_BRIDGE_ADMIN_KEY,
-    }
-
-    await support_bridge_log(
-        f"Support bridge start: discord_message={message.id} conversation={metadata['conversation_id']} reference={referenced_message.id}"
-    )
-    result = await support_bridge_http_request(
-        f"{SUPPORT_BRIDGE_API_BASE.rstrip('/')}/api/messages",
-        method="POST",
-        headers=headers,
-        json_body=payload,
-        timeout=20,
-    )
-
-    if not result.get("ok"):
-        error_text = support_bridge_strip_metadata(result.get("text", ""))[:200]
-        await support_bridge_log(
-            f"Support bridge failed: discord_message={message.id} status={result.get('status', 0)} error={error_text or result.get('error', '')}"
-        )
-        try:
-            await message.add_reaction(SUPPORT_BRIDGE_FAIL_REACTION)
-        except discord.HTTPException:
-            pass
-        return False
-
-    recent_support_bridge_message_ids[message.id] = now
-    response_json = result.get("json") or {}
-    response_message = response_json.get("message") or {}
-    await support_bridge_log(
-        f"Support bridge success: discord_message={message.id} api_message={response_message.get('id') or metadata['message_id']}"
-    )
-    try:
-        await message.add_reaction(SUPPORT_BRIDGE_SUCCESS_REACTION)
-    except discord.HTTPException:
-        logger.exception("Failed adding success reaction for support bridge message_id=%s", message.id)
-    return True
 
 
 async def dispatch_snippet(
@@ -2150,6 +1906,8 @@ async def run_script_trigger(
         request_headers = {}
         if isinstance(headers, dict):
             request_headers = {str(key): str(value) for key, value in headers.items()}
+        request_headers.setdefault("User-Agent", "SmokeBot/1.0 (+https://github.com/SmokeSlate/discordBots)")
+        request_headers.setdefault("Accept", "application/json,text/plain,*/*")
 
         payload_bytes = None
         if json_body is not None:
@@ -3939,12 +3697,6 @@ async def on_message(message):
     # Pinned message reposting
     if not is_bot_message:
         await handle_pin_repost(message)
-
-    if message.guild and not is_self_message:
-        try:
-            await handle_support_reply_bridge(message)
-        except Exception:
-            logger.exception("Unhandled error in native support reply bridge for message_id=%s", message.id)
 
     if message.guild:
         gid = str(message.guild.id)
