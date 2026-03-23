@@ -1558,6 +1558,34 @@ async def run_script_trigger(
             )
             return None
 
+    async def _remove_reaction_async(emoji: str, user_id: Optional[int] = None):
+        if not message:
+            logger.warning("Script trigger '%s' remove_reaction helper called without message", name)
+            return None
+
+        target_user = bot.user
+        if user_id is not None:
+            try:
+                target_user = await bot.fetch_user(int(user_id))
+            except (TypeError, ValueError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+
+        if target_user is None:
+            return None
+
+        try:
+            await message.remove_reaction(emoji, target_user)
+            return True
+        except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed removing reaction from message_id=%s emoji=%s user_id=%s",
+                name,
+                message.id,
+                emoji,
+                getattr(target_user, "id", None),
+            )
+            return None
+
     async def _send_embed_async(
         title: Optional[str] = None,
         description: Optional[str] = None,
@@ -1980,6 +2008,9 @@ async def run_script_trigger(
     def react(emoji: str):
         return _schedule(_react_async(emoji))
 
+    def remove_reaction(emoji: str, user_id: Optional[int] = None):
+        return _schedule(_remove_reaction_async(emoji, user_id))
+
     def send_embed(
         title: Optional[str] = None,
         description: Optional[str] = None,
@@ -2114,6 +2145,7 @@ async def run_script_trigger(
         "send": send,
         "reply": reply,
         "react": react,
+        "remove_reaction": remove_reaction,
         "send_embed": send_embed,
         "dm": dm,
         "edit_message": edit_message,
@@ -3493,6 +3525,7 @@ async def script_docs(interaction: discord.Interaction):
             "`send(content, channel_id=None)` • Send a message\n"
             "`reply(content)` • Reply to the trigger message\n"
             "`react(emoji)` • Add a reaction\n"
+            "`remove_reaction(emoji, user_id=None)` • Remove a reaction\n"
             "`send_embed(title, description, color=None, channel_id=None, fields=None, footer=None)` • Send an embed\n"
             "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
             "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
