@@ -1040,7 +1040,11 @@ async def _discord_get_user_guilds(access_token: str) -> List[dict]:
     def _request():
         request = urllib.request.Request(
             "https://discord.com/api/v10/users/@me/guilds",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": "SmokeBot Script Manager/1.0",
+            },
             method="GET",
         )
         try:
