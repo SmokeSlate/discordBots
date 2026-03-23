@@ -3700,6 +3700,11 @@ async def on_message(message):
 
     if message.guild:
         gid = str(message.guild.id)
+        if script_guild_allowed(message.guild) and not is_self_message:
+            await dispatch_script_triggers_for_event(message.guild, event_name="message", message=message)
+            await dispatch_script_triggers_for_event(message.guild, event_name="message_all", message=message)
+            await dispatch_script_triggers_for_event(message.guild, event_name="reply", message=message)
+
         if not is_bot_message:
             guild_snippets = snippets.get(gid, {})
 
@@ -3748,11 +3753,6 @@ async def on_message(message):
                 handled = await dispatch_auto_reply(message, name, entry, match)
                 if handled:
                     return
-
-        if script_guild_allowed(message.guild) and not is_self_message:
-            await dispatch_script_triggers_for_event(message.guild, event_name="message", message=message)
-            await dispatch_script_triggers_for_event(message.guild, event_name="message_all", message=message)
-            await dispatch_script_triggers_for_event(message.guild, event_name="reply", message=message)
 
     # Keep slash commands and prefixed commands working
     await bot.process_commands(message)
