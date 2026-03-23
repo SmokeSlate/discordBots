@@ -1484,6 +1484,14 @@ async def run_script_trigger(
     source_channel = message.channel if message else (reaction.message.channel if reaction else None)
     source_author = message.author if message else user
     source_content = message.content if message else ""
+    logger.info(
+        "Running script trigger '%s' event=%s guild=%s message_id=%s author_id=%s",
+        name,
+        event_name,
+        guild.id if guild else "unknown",
+        message.id if message else None,
+        source_author.id if source_author else None,
+    )
     referenced_message = None
     if message and message.reference and message.reference.message_id:
         referenced_message = getattr(message.reference, "resolved", None)
@@ -1501,28 +1509,52 @@ async def run_script_trigger(
                 try:
                     target = await bot.fetch_channel(channel_id)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    logger.warning(
+                        "Script trigger '%s' could not resolve send target channel_id=%s",
+                        name,
+                        channel_id,
+                    )
                     return None
         if target is None:
+            logger.warning("Script trigger '%s' send target is None", name)
             return None
         try:
             return await target.send(str(content))
         except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed sending message to channel_id=%s",
+                name,
+                getattr(target, "id", None),
+            )
             return None
 
     async def _reply_async(content: str):
         if not message:
+            logger.warning("Script trigger '%s' reply helper called without message", name)
             return None
         try:
             return await message.reply(str(content), mention_author=False)
         except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed replying to message_id=%s",
+                name,
+                message.id,
+            )
             return None
 
     async def _react_async(emoji: str):
         if not message:
+            logger.warning("Script trigger '%s' react helper called without message", name)
             return None
         try:
             return await message.add_reaction(emoji)
         except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed reacting to message_id=%s emoji=%s",
+                name,
+                message.id,
+                emoji,
+            )
             return None
 
     async def _send_embed_async(
@@ -1554,6 +1586,11 @@ async def run_script_trigger(
         try:
             return await target.send(embed=embed)
         except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed sending embed to channel_id=%s",
+                name,
+                getattr(target, "id", None),
+            )
             return None
 
     async def _dm_async(user_id: int, content: str):
@@ -1568,14 +1605,25 @@ async def run_script_trigger(
 
     async def _edit_message_async(message_id: int, content: Optional[str] = None):
         if not source_channel:
+            logger.warning("Script trigger '%s' edit helper called without source channel", name)
             return None
         try:
             target_message = await source_channel.fetch_message(int(message_id))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            logger.exception(
+                "Script trigger '%s' failed fetching message_id=%s for edit",
+                name,
+                message_id,
+            )
             return None
         try:
             return await target_message.edit(content=str(content) if content is not None else None)
         except discord.HTTPException:
+            logger.exception(
+                "Script trigger '%s' failed editing message_id=%s",
+                name,
+                message_id,
+            )
             return None
 
     async def _delete_message_async(message_id: Optional[int] = None):
@@ -2116,6 +2164,13 @@ async def run_script_trigger(
                 result = script_entry()
                 if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
                     await result
+        logger.info(
+            "Completed script trigger '%s' event=%s guild=%s message_id=%s",
+            name,
+            event_name,
+            guild.id if guild else "unknown",
+            message.id if message else None,
+        )
     except Exception as exc:
         logger.exception("Error running script trigger '%s' in guild %s", name, guild.id)
         try:
@@ -3551,6 +3606,14 @@ async def dispatch_script_triggers_for_event(
             match = trigger_match_text(entry, message.content)
             if not match:
                 continue
+            logger.info(
+                "Dispatching reply script trigger '%s' guild=%s message_id=%s reference_id=%s channel_id=%s",
+                name,
+                guild.id if guild else "unknown",
+                message.id if message else None,
+                message.reference.message_id if message and message.reference else None,
+                channel_id,
+            )
         elif event_name == "reaction_add":
             if not reaction:
                 continue
