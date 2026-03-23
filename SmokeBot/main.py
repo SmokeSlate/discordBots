@@ -3661,6 +3661,26 @@ async def dispatch_script_triggers_for_event(
 async def on_message(message):
     is_bot_message = message.author.bot
     is_self_message = bot.user and message.author.id == bot.user.id
+    content_preview = (message.content or "").replace("\n", "\\n")[:240]
+    reference_id = (
+        message.reference.message_id
+        if message.reference and message.reference.message_id
+        else getattr(getattr(message.reference, "resolved", None), "id", None)
+        if message.reference
+        else None
+    )
+
+    logger.info(
+        "Observed message guild=%s channel_id=%s message_id=%s author_id=%s bot=%s self=%s reference_id=%s content=%r",
+        message.guild.id if message.guild else None,
+        message.channel.id if message.channel else None,
+        message.id,
+        message.author.id if message.author else None,
+        is_bot_message,
+        bool(is_self_message),
+        reference_id,
+        content_preview,
+    )
 
     if message.guild and message.reference:
         logger.info(
