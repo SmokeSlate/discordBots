@@ -18,6 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const loginStatus = document.getElementById("login-status");
   const sessionStatus = document.getElementById("session-status");
   const editorStatus = document.getElementById("editor-status");
+  const codeLength = document.getElementById("code-length");
   const templateSelect = document.getElementById("quick_template");
   const searchInput = document.getElementById("script_search");
 
@@ -46,6 +47,7 @@ document.addEventListener("DOMContentLoaded", () => {
     !loginStatus ||
     !sessionStatus ||
     !editorStatus ||
+    !codeLength ||
     !templateSelect ||
     !searchInput
   ) {
@@ -191,6 +193,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const channelIdsToText = (ids = []) => ids.map((id) => String(id)).join(", ");
 
+  const updateCodeLength = () => {
+    const length = fields.code.value.length;
+    const exceedsDiscordModal = length > 4000;
+    codeLength.textContent = exceedsDiscordModal
+      ? `${length} characters. This is fine in the web editor; the 4000-character cap only applies to the Discord modal.`
+      : `${length} characters. The web editor can save scripts longer than 4000 characters.`;
+    codeLength.classList.toggle("text-red-400", false);
+    codeLength.classList.toggle("text-green-400", true);
+  };
+
   const setFormEnabled = (enabled) => {
     scriptForm.querySelectorAll("input,select,textarea,button").forEach((element) => {
       element.disabled = !enabled;
@@ -219,6 +231,7 @@ document.addEventListener("DOMContentLoaded", () => {
     fields.matchType.value = "contains";
     templateSelect.value = "";
     editingName = null;
+    updateCodeLength();
   };
 
   const loadIntoForm = (name, entry) => {
@@ -231,6 +244,7 @@ document.addEventListener("DOMContentLoaded", () => {
     fields.code.value = entry.code || "";
     templateSelect.value = "";
     editingName = name;
+    updateCodeLength();
     scriptForm.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -485,10 +499,15 @@ document.addEventListener("DOMContentLoaded", () => {
     fields.matchType.value = selected.match_type;
     fields.pattern.value = selected.pattern;
     fields.code.value = selected.code;
+    updateCodeLength();
   });
 
   searchInput.addEventListener("input", () => {
     renderList();
+  });
+
+  fields.code.addEventListener("input", () => {
+    updateCodeLength();
   });
 
   resetForm();
