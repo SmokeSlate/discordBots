@@ -112,12 +112,8 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const loginWithDiscord = () => {
-    const authUrl = new URL("https://discord.com/oauth2/authorize");
-    authUrl.searchParams.set("client_id", DISCORD_CLIENT_ID);
-    authUrl.searchParams.set("response_type", "token");
-    authUrl.searchParams.set("redirect_uri", oauthRedirectUri);
-    authUrl.searchParams.set("scope", "identify guilds");
-    authUrl.searchParams.set("prompt", "consent");
+    const authUrl = new URL(`${BOT_API_BASE}/api/script-auth/login`);
+    authUrl.searchParams.set("return_to", oauthRedirectUri);
     window.location.href = authUrl.toString();
   };
 
@@ -460,6 +456,14 @@ document.addEventListener("DOMContentLoaded", () => {
     setFormEnabled(false);
 
     const oauthResult = getOAuthResultFromHash();
+    const oauthError = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("oauth_error");
+    if (oauthError) {
+      setToken("");
+      history.replaceState({}, document.title, oauthRedirectUri);
+      setStatus("Discord sign-in failed. Sign in again.", true);
+      return;
+    }
+
     if (oauthResult.accessToken) {
       const grantedScopes = new Set(
         oauthResult.scope

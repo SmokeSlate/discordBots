@@ -8,16 +8,17 @@
 # =====================================================
 
 import asyncio
+import base64
 import builtins
 import json
 import logging
 import os
 import random
 import re
-import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -921,6 +922,62 @@ def _script_api_allowed_origins() -> List[str]:
     return allowed or ["*"]
 
 
+def _script_manager_site_origin() -> str:
+    configured = os.getenv("SCRIPT_MANAGER_SITE_ORIGIN", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    for origin in _script_api_allowed_origins():
+        if origin != "*":
+            return origin.rstrip("/")
+    return "https://bot.sm0ke.org"
+
+
+def _script_manager_public_base() -> str:
+    return os.getenv("SCRIPT_MANAGER_PUBLIC_BASE", "https://botapi.sm0ke.org").strip().rstrip("/")
+
+
+def _script_manager_discord_client_id() -> str:
+    return (
+        os.getenv("SCRIPT_MANAGER_DISCORD_CLIENT_ID", "").strip()
+        or os.getenv("DISCORD_CLIENT_ID", "").strip()
+        or "1375925201191178300"
+    )
+
+
+def _script_manager_discord_client_secret() -> str:
+    return (
+        os.getenv("SCRIPT_MANAGER_DISCORD_CLIENT_SECRET", "").strip()
+        or os.getenv("DISCORD_CLIENT_SECRET", "").strip()
+    )
+
+
+def _script_manager_callback_url() -> str:
+    return f"{_script_manager_public_base()}/api/script-auth/callback"
+
+
+def _script_manager_default_return_url() -> str:
+    return f"{_script_manager_site_origin()}/scripts/"
+
+
+def _script_manager_is_allowed_return_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        allowed = urllib.parse.urlparse(_script_manager_site_origin())
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and parsed.netloc == allowed.netloc
+
+
+def _script_manager_encode_state(return_url: str) -> str:
+    return base64.urlsafe_b64encode(return_url.encode("utf-8")).decode("ascii")
+
+
+def _script_manager_decode_state(state: str) -> str:
+    padded = state + "=" * (-len(state) % 4)
+    return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+
+
 def _script_api_response_headers(request: web.Request) -> Dict[str, str]:
     origin = request.headers.get("Origin", "").strip()
     allowed_origins = _script_api_allowed_origins()
@@ -946,19 +1003,6 @@ def _script_api_response_headers(request: web.Request) -> Dict[str, str]:
 
 def _script_api_response(request: web.Request, payload: Any, status: int = 200) -> web.Response:
     return web.json_response(payload, status=status, headers=_script_api_response_headers(request))
-
-
-def _build_script_api_ssl_context() -> Optional[ssl.SSLContext]:
-    cert_path = os.getenv("SCRIPT_MANAGER_API_SSL_CERT", "").strip()
-    key_path = os.getenv("SCRIPT_MANAGER_API_SSL_KEY", "").strip()
-    if not cert_path and not key_path:
-        return None
-    if not cert_path or not key_path:
-        raise RuntimeError("Both SCRIPT_MANAGER_API_SSL_CERT and SCRIPT_MANAGER_API_SSL_KEY must be set for HTTPS.")
-
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
-    return ssl_context
 
 
 def _script_api_bot_has_guild(guild_id: str) -> bool:
@@ -1096,6 +1140,95 @@ async def script_api_health(request: web.Request) -> web.Response:
     )
 
 
+async def script_auth_login(request: web.Request) -> web.Response:
+    return_to = request.query.get("return_to", "").strip() or _script_manager_default_return_url()
+    if not _script_manager_is_allowed_return_url(return_to):
+        return web.Response(text="Invalid return_to", status=400)
+
+    client_id = _script_manager_discord_client_id()
+    if not client_id:
+        return web.Response(text="Discord client id is not configured.", status=500)
+
+    auth_url = urllib.parse.urlparse("https://discord.com/oauth2/authorize")
+    query = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": _script_manager_callback_url(),
+            "scope": "identify guilds",
+            "prompt": "consent",
+            "state": _script_manager_encode_state(return_to),
+        }
+    )
+    raise web.HTTPFound(f"{auth_url.scheme}://{auth_url.netloc}{auth_url.path}?{query}")
+
+
+async def script_auth_callback(request: web.Request) -> web.Response:
+    code = request.query.get("code", "").strip()
+    state = request.query.get("state", "").strip()
+    error = request.query.get("error", "").strip()
+
+    try:
+        return_to = _script_manager_decode_state(state) if state else _script_manager_default_return_url()
+    except Exception:
+        return_to = _script_manager_default_return_url()
+
+    if not _script_manager_is_allowed_return_url(return_to):
+        return_to = _script_manager_default_return_url()
+
+    if error:
+        raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote(error)}")
+
+    client_id = _script_manager_discord_client_id()
+    client_secret = _script_manager_discord_client_secret()
+    if not code or not client_id or not client_secret:
+        raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('configuration_error')}")
+
+    form_body = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _script_manager_callback_url(),
+        }
+    ).encode("utf-8")
+
+    token_request = urllib.request.Request(
+        "https://discord.com/api/oauth2/token",
+        data=form_body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(token_request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        logger.warning("Discord token exchange failed with status %s: %s", exc.code, body or "<empty body>")
+        raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('token_exchange_failed')}")
+    except Exception:
+        logger.exception("Discord token exchange failed unexpectedly.")
+        raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('token_exchange_failed')}")
+
+    access_token = str(payload.get("access_token") or "").strip()
+    scope = str(payload.get("scope") or "").strip()
+    expires_in = str(payload.get("expires_in") or "").strip()
+
+    if not access_token:
+        raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('missing_access_token')}")
+
+    fragment = urllib.parse.urlencode(
+        {
+            "access_token": access_token,
+            "scope": scope,
+            "expires_in": expires_in,
+        }
+    )
+    raise web.HTTPFound(f"{return_to}#{fragment}")
+
+
 async def script_api_get_triggers(request: web.Request) -> web.Response:
     guild_id = request.match_info.get("guild_id", "")
     allowed, error = await _script_api_can_manage_guild(request, guild_id)
@@ -1181,6 +1314,8 @@ async def start_script_manager_api():
 
     app = web.Application()
     app.router.add_get("/healthz", script_api_health)
+    app.router.add_get("/api/script-auth/login", script_auth_login)
+    app.router.add_get("/api/script-auth/callback", script_auth_callback)
     app.router.add_route("OPTIONS", "/api/script-triggers/guilds", script_api_options)
     app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}", script_api_options)
     app.router.add_route("OPTIONS", "/api/script-triggers/{guild_id}/{name}", script_api_options)
@@ -1194,23 +1329,21 @@ async def start_script_manager_api():
     hosts_raw = os.getenv("SCRIPT_MANAGER_API_HOST", "0.0.0.0,::").strip() or "0.0.0.0,::"
     hosts = [host.strip() for host in hosts_raw.split(",") if host.strip()]
     port = int(os.getenv("SCRIPT_MANAGER_API_PORT", "8080"))
-    ssl_context = _build_script_api_ssl_context()
-    scheme = "https" if ssl_context is not None else "http"
     started_hosts: List[str] = []
 
     for host in hosts:
         try:
-            site = web.TCPSite(script_api_runner, host=host, port=port, ssl_context=ssl_context)
+            site = web.TCPSite(script_api_runner, host=host, port=port)
             await site.start()
             script_api_sites.append(site)
             started_hosts.append(host)
         except OSError:
-            logger.exception("Failed to bind script manager API on %s://%s:%s", scheme, host, port)
+            logger.exception("Failed to bind script manager API on http://%s:%s", host, port)
 
     if not started_hosts:
         raise RuntimeError(f"Failed to bind script manager API on any configured host for port {port}")
 
-    logger.info("Script manager API listening on %s port %s via hosts: %s", scheme, port, ", ".join(started_hosts))
+    logger.info("Script manager API listening on http port %s via hosts: %s", port, ", ".join(started_hosts))
 
 
 def script_guild_allowed(guild: Optional[discord.Guild]) -> bool:
