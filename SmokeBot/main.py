@@ -1183,7 +1183,7 @@ async def script_auth_login(request: web.Request) -> web.Response:
             "client_id": client_id,
             "response_type": "code",
             "redirect_uri": _script_manager_callback_url(),
-            "scope": "identify guilds",
+            "scope": "identify",
             "prompt": "consent",
             "state": _script_manager_encode_state(return_to),
         }

@@ -529,21 +529,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (oauthResult.accessToken) {
-      const grantedScopes = new Set(
-        oauthResult.scope
-          .split(" ")
-          .map((scope) => scope.trim())
-          .filter(Boolean),
-      );
-      if (!grantedScopes.has("guilds")) {
-        setToken("");
-        setSelectedGuild("");
-        resetWorkspace();
-        setLoginStatus('Discord did not grant the required "guilds" scope. Sign in again.', true);
-        history.replaceState({}, document.title, oauthRedirectUri);
-        return;
-      }
-
       setToken(oauthResult.accessToken);
       history.replaceState({}, document.title, oauthRedirectUri);
     }
