@@ -1210,6 +1210,14 @@ async def script_auth_callback(request: web.Request) -> web.Response:
     client_id = _script_manager_discord_client_id()
     client_secret = _script_manager_discord_client_secret()
     if not code or not client_id or not client_secret:
+        missing = []
+        if not code:
+            missing.append("code")
+        if not client_id:
+            missing.append("client_id")
+        if not client_secret:
+            missing.append("client_secret")
+        logger.warning("Script manager OAuth callback missing required configuration: %s", ", ".join(missing))
         raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('configuration_error')}")
 
     form_body = urllib.parse.urlencode(

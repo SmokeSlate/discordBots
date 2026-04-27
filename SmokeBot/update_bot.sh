@@ -6,6 +6,7 @@ RAW_BASE="https://raw.githubusercontent.com/SmokeSlate/discordBots/main/SmokeBot
 PID_FILE="$BOT_DIR/pid.txt"
 LOG_FILE="$BOT_DIR/discord.log"
 MAIN_FILE="$BOT_DIR/main.py"
+ENV_FILE="$BOT_DIR/.smokebot_env"
 SCRIPT_FILES=(
   "main.py"
   "storage.py"
@@ -38,6 +39,12 @@ for file in "${SCRIPT_FILES[@]}"; do
 done
 
 echo "Starting bot..."
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+fi
 nohup python3 "$MAIN_FILE" > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 echo "Started with PID $(cat "$PID_FILE")"
