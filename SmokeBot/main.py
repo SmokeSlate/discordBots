@@ -31,9 +31,11 @@ from discord.ext import commands
 try:
     from .auto_update import apply_git_update, get_git_update_status
     from .storage import migrate_legacy_json_files, read_json, write_json
+    from .chat_utils import get_or_create_message_thread, resolve_archive_duration
 except ImportError:
     from auto_update import apply_git_update, get_git_update_status
     from storage import migrate_legacy_json_files, read_json, write_json
+    from chat_utils import get_or_create_message_thread, resolve_archive_duration
 
 # =====================================================
 # Token Loader
@@ -1524,6 +1526,7 @@ async def run_script_trigger(
                         channel_id,
                     )
                     return None
+
         if target is None:
             logger.warning("Script trigger '%s' send target is None", name)
             return None
@@ -2004,6 +2007,182 @@ async def run_script_trigger(
 
         return await asyncio.to_thread(_run_request)
 
+    async def _send_in_thread_async(content: str, thread_name: Optional[str] = None):
+        if not message or not guild:
+            return None
+        guild_settings = get_guild_chat_settings(str(guild.id))
+        archive_minutes = int(guild_settings.get("thread_archive_minutes", 60))
+        tname = (thread_name or guild_settings.get("thread_name_template", "Chat: {trigger}")).format(
+            trigger=name, author=str(source_author) if source_author else ""
+        )
+        thread = await get_or_create_message_thread(message, tname, archive_minutes)
+        if thread is None and source_channel is not None:
+            try:
+                return await source_channel.send(str(content))
+            except discord.HTTPException:
+                return None
+        if thread is None:
+            return None
+        try:
+            return await thread.send(str(content))
+        except discord.HTTPException:
+            return None
+
+    async def _create_thread_async(
+        tname: str,
+        message_id: Optional[int] = None,
+        archive_minutes: int = 60,
+    ):
+        if not isinstance(source_channel, discord.TextChannel):
+            return None
+        try:
+            target_msg = message
+            if message_id is not None:
+                target_msg = await source_channel.fetch_message(int(message_id))
+            if target_msg is None:
+                return None
+            return await target_msg.create_thread(
+                name=tname[:100],
+                auto_archive_duration=resolve_archive_duration(archive_minutes),
+            )
+        except (discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _pin_message_async(message_id: Optional[int] = None):
+        if not source_channel:
+            return None
+        target_id = message_id if message_id is not None else (message.id if message else None)
+        if target_id is None:
+            return None
+        try:
+            target_msg = await source_channel.fetch_message(int(target_id))
+            await target_msg.pin()
+            return target_msg
+        except (discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _unpin_message_async(message_id: Optional[int] = None):
+        if not source_channel:
+            return None
+        target_id = message_id if message_id is not None else (message.id if message else None)
+        if target_id is None:
+            return None
+        try:
+            target_msg = await source_channel.fetch_message(int(target_id))
+            await target_msg.unpin()
+            return target_msg
+        except (discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _set_channel_topic_async(topic: str):
+        if not isinstance(source_channel, discord.TextChannel):
+            return None
+        try:
+            await source_channel.edit(topic=str(topic)[:1024])
+            return source_channel
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def _fetch_member_info_async(user_id: int) -> Optional[dict]:
+        if not guild:
+            return None
+        try:
+            m = guild.get_member(int(user_id))
+            if m is None:
+                m = await guild.fetch_member(int(user_id))
+            if m is None:
+                return None
+            return {
+                "id": m.id,
+                "name": str(m),
+                "display_name": m.display_name,
+                "nick": m.nick,
+                "bot": m.bot,
+                "roles": [{"id": r.id, "name": r.name} for r in m.roles],
+                "joined_at": m.joined_at.isoformat() if m.joined_at else None,
+                "created_at": m.created_at.isoformat(),
+                "mention": m.mention,
+                "avatar_url": str(m.display_avatar.url) if m.display_avatar else None,
+            }
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _get_channel_info_async() -> Optional[dict]:
+        ch = source_channel
+        if ch is None:
+            return None
+        info: dict = {
+            "id": ch.id,
+            "name": getattr(ch, "name", None),
+            "type": str(ch.type),
+            "mention": getattr(ch, "mention", None),
+        }
+        if isinstance(ch, discord.TextChannel):
+            info["topic"] = ch.topic
+            info["slowmode"] = ch.slowmode_delay
+            info["nsfw"] = ch.is_nsfw()
+        if isinstance(ch, discord.Thread):
+            info["parent_id"] = ch.parent_id
+            info["archived"] = ch.archived
+            info["locked"] = ch.locked
+            info["member_count"] = ch.member_count
+        return info
+
+    async def _lock_thread_async(locked: bool = True, reason: str = ""):
+        if not isinstance(source_channel, discord.Thread):
+            return None
+        try:
+            await source_channel.edit(locked=locked, reason=reason or None)
+            return source_channel
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def _archive_thread_async(reason: str = ""):
+        if not isinstance(source_channel, discord.Thread):
+            return None
+        try:
+            await source_channel.edit(archived=True, reason=reason or None)
+            return source_channel
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def _rename_thread_async(new_name: str):
+        if not isinstance(source_channel, discord.Thread):
+            return None
+        try:
+            await source_channel.edit(name=new_name[:100])
+            return source_channel
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def _add_user_to_thread_async(user_id: int):
+        if not isinstance(source_channel, discord.Thread):
+            return None
+        try:
+            target = guild.get_member(int(user_id)) if guild else None
+            if target is None:
+                target = await bot.fetch_user(int(user_id))
+            if target is None:
+                return None
+            await source_channel.add_user(target)
+            return target
+        except (discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _remove_user_from_thread_async(user_id: int):
+        if not isinstance(source_channel, discord.Thread):
+            return None
+        try:
+            target = guild.get_member(int(user_id)) if guild else None
+            if target is None:
+                target = await bot.fetch_user(int(user_id))
+            if target is None:
+                return None
+            await source_channel.remove_user(target)
+            return target
+        except (discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
     def _schedule(coro):
         return asyncio.create_task(coro)
 
@@ -2126,6 +2305,45 @@ async def run_script_trigger(
     ):
         return _schedule(_http_request_async(url, method, headers, body, json_body, timeout))
 
+    def send_in_thread(content: str, thread_name: Optional[str] = None):
+        return _schedule(_send_in_thread_async(content, thread_name))
+
+    def create_thread(tname: str, message_id: Optional[int] = None, archive_minutes: int = 60):
+        return _schedule(_create_thread_async(tname, message_id, archive_minutes))
+
+    def pin_message(message_id: Optional[int] = None):
+        return _schedule(_pin_message_async(message_id))
+
+    def unpin_message(message_id: Optional[int] = None):
+        return _schedule(_unpin_message_async(message_id))
+
+    def set_channel_topic(topic: str):
+        return _schedule(_set_channel_topic_async(topic))
+
+    def fetch_member_info(user_id: int):
+        return _schedule(_fetch_member_info_async(user_id))
+
+    def get_channel_info():
+        return _schedule(_get_channel_info_async())
+
+    def lock_thread(reason: str = ""):
+        return _schedule(_lock_thread_async(True, reason))
+
+    def unlock_thread(reason: str = ""):
+        return _schedule(_lock_thread_async(False, reason))
+
+    def archive_thread(reason: str = ""):
+        return _schedule(_archive_thread_async(reason))
+
+    def add_user_to_thread(user_id: int):
+        return _schedule(_add_user_to_thread_async(user_id))
+
+    def remove_user_from_thread(user_id: int):
+        return _schedule(_remove_user_from_thread_async(user_id))
+
+    def rename_thread(new_name: str):
+        return _schedule(_rename_thread_async(new_name))
+
     safe_builtins = {
         "str": str,
         "int": int,
@@ -2168,6 +2386,19 @@ async def run_script_trigger(
         "add_role": add_role,
         "remove_role": remove_role,
         "http_request": http_request,
+        "send_in_thread": send_in_thread,
+        "create_thread": create_thread,
+        "pin_message": pin_message,
+        "unpin_message": unpin_message,
+        "set_channel_topic": set_channel_topic,
+        "fetch_member_info": fetch_member_info,
+        "get_channel_info": get_channel_info,
+        "lock_thread": lock_thread,
+        "unlock_thread": unlock_thread,
+        "archive_thread": archive_thread,
+        "add_user_to_thread": add_user_to_thread,
+        "remove_user_from_thread": remove_user_from_thread,
+        "rename_thread": rename_thread,
         "message": message,
         "referenced_message": referenced_message,
         "author": source_author,
@@ -3530,16 +3761,41 @@ async def script_docs(interaction: discord.Interaction):
     embed.add_field(
         name="Message helpers",
         value=(
-            "`send(content, channel_id=None)` • Send a message\n"
+            "`send(content, channel_id=None)` • Send a message (uses thread mode if enabled)\n"
             "`reply(content)` • Reply to the trigger message\n"
+            "`send_in_thread(content, thread_name=None)` • Send in a thread on the trigger message\n"
             "`react(emoji)` • Add a reaction\n"
             "`remove_reaction(emoji, user_id=None)` • Remove a reaction\n"
             "`send_embed(title, description, color=None, channel_id=None, fields=None, footer=None)` • Send an embed\n"
             "`edit_message(message_id, content=None)` • Edit a message in the channel\n"
             "`delete_message(message_id=None)` • Delete a message (defaults to trigger)\n"
+            "`pin_message(message_id=None)` • Pin a message (defaults to trigger)\n"
+            "`unpin_message(message_id=None)` • Unpin a message (defaults to trigger)\n"
             "`dm(user_id, content)` • DM a user\n"
             "`search_messages(query=None, limit=50, from_user_id=None, include_bots=True, attachments_only=False)` • Search recent channel history\n"
             "`http_request(url, method='GET', headers=None, body=None, json_body=None, timeout=15)` • Make an HTTP request"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Thread helpers",
+        value=(
+            "`create_thread(name, message_id=None, archive_minutes=60)` • Create a public thread on a message\n"
+            "`lock_thread(reason='')` • Lock the current thread\n"
+            "`unlock_thread(reason='')` • Unlock the current thread\n"
+            "`archive_thread(reason='')` • Archive the current thread\n"
+            "`add_user_to_thread(user_id)` • Add a user to the current thread\n"
+            "`remove_user_from_thread(user_id)` • Remove a user from the current thread\n"
+            "`rename_thread(new_name)` • Rename the current thread"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Channel & member info",
+        value=(
+            "`get_channel_info()` • Returns dict with id, name, type, topic, slowmode, etc.\n"
+            "`fetch_member_info(user_id)` • Returns dict with id, name, roles, joined_at, etc.\n"
+            "`set_channel_topic(topic)` • Set the text channel topic"
         ),
         inline=False,
     )
@@ -3591,6 +3847,8 @@ async def script_docs(interaction: discord.Interaction):
 
 
 bot.tree.add_command(script_group)
+
+
 
 
 async def dispatch_script_triggers_for_event(

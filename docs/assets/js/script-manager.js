@@ -64,6 +64,12 @@ document.addEventListener("DOMContentLoaded", () => {
       pattern: "hello bot",
       code: "send('Hey there!')",
     },
+    send_in_thread: {
+      event: "message",
+      match_type: "contains",
+      pattern: "!thread",
+      code: "send_in_thread('Your request has been moved to a thread!', 'Support: ' + author.display_name)",
+    },
     auto_react: {
       event: "message",
       match_type: "contains",
@@ -75,6 +81,62 @@ document.addEventListener("DOMContentLoaded", () => {
       match_type: "regex",
       pattern: "help|mod",
       code: "send('<@&ROLE_ID_HERE> new request in ' + channel.mention)",
+    },
+    pin_message: {
+      event: "message",
+      match_type: "contains",
+      pattern: "!pin",
+      code: "pin_message()",
+    },
+    fetch_member: {
+      event: "message",
+      match_type: "contains",
+      pattern: "!whois",
+      code: [
+        "async def run():",
+        "    info = await fetch_member_info(author.id)",
+        "    if info:",
+        "        roles = ', '.join(r['name'] for r in info['roles'][1:])",
+        "        send(f\"{info['display_name']} joined {info['joined_at'][:10]}. Roles: {roles or 'none'}\")",
+        "",
+        "__script_async_entry__ = run()",
+      ].join("\n"),
+    },
+    http_post: {
+      event: "message",
+      match_type: "contains",
+      pattern: "!notify",
+      code: [
+        "async def run():",
+        "    result = await http_request(",
+        "        'https://example.com/webhook',",
+        "        method='POST',",
+        "        json_body={'text': content, 'user': str(author)},",
+        "    )",
+        "    send('Sent!' if result['ok'] else 'Failed: ' + result['text'][:100])",
+        "",
+        "__script_async_entry__ = run()",
+      ].join("\n"),
+    },
+    lock_thread: {
+      event: "message",
+      match_type: "contains",
+      pattern: "!lock",
+      code: [
+        "lock_thread('Locked by moderator')",
+        "send('🔒 Thread locked.')",
+      ].join("\n"),
+    },
+    welcome_thread: {
+      event: "member_join",
+      match_type: "contains",
+      pattern: "",
+      code: [
+        "send_in_thread(",
+        "    f'Welcome {member.mention}! Reply here if you need help.',",
+        "    thread_name=f'Welcome — {member.display_name}',",
+        ")",
+      ].join("\n"),
     },
   };
 
