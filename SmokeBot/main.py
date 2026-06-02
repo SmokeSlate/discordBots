@@ -2046,6 +2046,29 @@ async def run_script_trigger(
             pass
         return None
 
+    async def _resolve_snippet_async(text):
+        """If text starts with !trigger, return the rendered snippet content (or None)."""
+        if not guild or not text or not message:
+            return None
+        try:
+            stripped = str(text).lstrip()
+            if not stripped.startswith("!"):
+                return None
+            parts = stripped.split()
+            if not parts:
+                return None
+            trigger = parts[0][1:]
+            if not trigger:
+                return None
+            guild_snippets = snippets.get(str(guild.id), {})
+            entry = guild_snippets.get(trigger)
+            if not entry:
+                return None
+            args = parts[1:] if entry.get("dynamic") else []
+            return await render_snippet_content(message, entry, args)
+        except BaseException:
+            return None
+
     async def _create_thread_async(
         tname: str,
         message_id: Optional[int] = None,
@@ -2332,6 +2355,9 @@ async def run_script_trigger(
     def find_thread_by_name(thread_name: str):
         return _schedule(_find_thread_by_name_async(thread_name))
 
+    def resolve_snippet(text):
+        return _schedule(_resolve_snippet_async(text))
+
     def create_thread(tname: str, message_id: Optional[int] = None, archive_minutes: int = 60):
         return _schedule(_create_thread_async(tname, message_id, archive_minutes))
 
@@ -2446,6 +2472,7 @@ async def run_script_trigger(
         "send_in_thread": send_in_thread,
         "send_to_thread": send_to_thread,
         "find_thread_by_name": find_thread_by_name,
+        "resolve_snippet": resolve_snippet,
         "create_thread": create_thread,
         "pin_message": pin_message,
         "unpin_message": unpin_message,
