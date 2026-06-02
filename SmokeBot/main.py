@@ -2010,12 +2010,8 @@ async def run_script_trigger(
     async def _send_in_thread_async(content: str, thread_name: Optional[str] = None):
         if not message or not guild:
             return None
-        guild_settings = get_guild_chat_settings(str(guild.id))
-        archive_minutes = int(guild_settings.get("thread_archive_minutes", 60))
-        tname = (thread_name or guild_settings.get("thread_name_template", "Chat: {trigger}")).format(
-            trigger=name, author=str(source_author) if source_author else ""
-        )
-        thread = await get_or_create_message_thread(message, tname, archive_minutes)
+        tname = thread_name or f"Chat: {name}"
+        thread = await get_or_create_message_thread(message, tname, 60)
         if thread is None and source_channel is not None:
             try:
                 return await source_channel.send(str(content))
@@ -2027,6 +2023,28 @@ async def run_script_trigger(
             return await thread.send(str(content))
         except discord.HTTPException:
             return None
+
+    async def _send_to_thread_async(thread_id: int, content: str):
+        try:
+            target = guild.get_thread(int(thread_id)) if guild else None
+            if target is None:
+                target = await bot.fetch_channel(int(thread_id))
+            if target is None:
+                return None
+            return await target.send(str(content))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+
+    async def _find_thread_by_name_async(thread_name: str):
+        if not isinstance(source_channel, discord.TextChannel):
+            return None
+        try:
+            for t in source_channel.threads:
+                if t.name == thread_name and not t.archived:
+                    return t
+        except BaseException:
+            pass
+        return None
 
     async def _create_thread_async(
         tname: str,
@@ -2308,6 +2326,12 @@ async def run_script_trigger(
     def send_in_thread(content: str, thread_name: Optional[str] = None):
         return _schedule(_send_in_thread_async(content, thread_name))
 
+    def send_to_thread(thread_id: int, content: str):
+        return _schedule(_send_to_thread_async(thread_id, content))
+
+    def find_thread_by_name(thread_name: str):
+        return _schedule(_find_thread_by_name_async(thread_name))
+
     def create_thread(tname: str, message_id: Optional[int] = None, archive_minutes: int = 60):
         return _schedule(_create_thread_async(tname, message_id, archive_minutes))
 
@@ -2360,6 +2384,39 @@ async def run_script_trigger(
         "set": set,
         "tuple": tuple,
         "print": print,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "abs": abs,
+        "round": round,
+        "any": any,
+        "all": all,
+        "isinstance": isinstance,
+        "getattr": getattr,
+        "hasattr": hasattr,
+        "setattr": setattr,
+        "repr": repr,
+        "type": type,
+        # Exceptions — needed for try/except in user scripts
+        "Exception": Exception,
+        "BaseException": BaseException,
+        "ValueError": ValueError,
+        "TypeError": TypeError,
+        "KeyError": KeyError,
+        "AttributeError": AttributeError,
+        "IndexError": IndexError,
+        "RuntimeError": RuntimeError,
+        "StopIteration": StopIteration,
+        "StopAsyncIteration": StopAsyncIteration,
+        "ArithmeticError": ArithmeticError,
+        "ZeroDivisionError": ZeroDivisionError,
+        "LookupError": LookupError,
+        "NameError": NameError,
+        "UnicodeError": UnicodeError,
+        "True": True,
+        "False": False,
+        "None": None,
     }
 
     trusted_actor_id = source_author.id if source_author else None
@@ -2387,6 +2444,8 @@ async def run_script_trigger(
         "remove_role": remove_role,
         "http_request": http_request,
         "send_in_thread": send_in_thread,
+        "send_to_thread": send_to_thread,
+        "find_thread_by_name": find_thread_by_name,
         "create_thread": create_thread,
         "pin_message": pin_message,
         "unpin_message": unpin_message,
