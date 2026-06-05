@@ -30,10 +30,12 @@ from discord.ext import commands
 
 try:
     from .auto_update import apply_git_update, get_git_update_status
+    from .snippet_utils import should_dispatch_prefix_snippets
     from .storage import migrate_legacy_json_files, read_json, write_json
     from .chat_utils import get_or_create_message_thread, resolve_archive_duration
 except ImportError:
     from auto_update import apply_git_update, get_git_update_status
+    from snippet_utils import should_dispatch_prefix_snippets
     from storage import migrate_legacy_json_files, read_json, write_json
     from chat_utils import get_or_create_message_thread, resolve_archive_duration
 
@@ -4090,7 +4092,10 @@ async def on_message(message):
             await dispatch_script_triggers_for_event(message.guild, event_name="message_all", message=message)
             await dispatch_script_triggers_for_event(message.guild, event_name="reply", message=message)
 
-        if not is_bot_message:
+        if should_dispatch_prefix_snippets(
+            is_bot_message=is_bot_message,
+            is_self_message=bool(is_self_message),
+        ):
             guild_snippets = snippets.get(gid, {})
 
             if message.content.startswith("!"):
