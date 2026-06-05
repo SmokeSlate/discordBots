@@ -30,12 +30,10 @@ from discord.ext import commands
 
 try:
     from .auto_update import apply_git_update, get_git_update_status
-    from .snippet_utils import should_dispatch_prefix_snippets
     from .storage import migrate_legacy_json_files, read_json, write_json
     from .chat_utils import get_or_create_message_thread, resolve_archive_duration
 except ImportError:
     from auto_update import apply_git_update, get_git_update_status
-    from snippet_utils import should_dispatch_prefix_snippets
     from storage import migrate_legacy_json_files, read_json, write_json
     from chat_utils import get_or_create_message_thread, resolve_archive_duration
 
@@ -98,6 +96,11 @@ def has_mod_permissions_or_override(interaction: discord.Interaction) -> bool:
             interaction.user.guild_permissions.moderate_members or
             interaction.user.guild_permissions.ban_members or
             interaction.user.guild_permissions.kick_members)
+
+
+def should_dispatch_prefix_snippets(*, is_bot_message: bool, is_self_message: bool) -> bool:
+    """Allow human and third-party bot messages, but never recurse on our own output."""
+    return not is_self_message
 
 # =====================================================
 # Generic file helpers for other data

@@ -11,6 +11,7 @@ SCRIPT_FILES=(
   "main.py"
   "storage.py"
   "auto_update.py"
+  "chat_utils.py"
 )
 
 cd "$BOT_DIR"
