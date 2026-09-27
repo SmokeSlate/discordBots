@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import builtins
+import hmac
 import json
 import logging
 import os
@@ -1012,6 +1013,115 @@ def _script_api_response(request: web.Request, payload: Any, status: int = 200) 
     return web.json_response(payload, status=status, headers=_script_api_response_headers(request))
 
 
+def _support_chat_bridge_key() -> str:
+    configured = os.getenv("SUPPORT_CHAT_BRIDGE_KEY", "").strip()
+    if configured:
+        return configured
+    key_path = os.getenv(
+        "SUPPORT_CHAT_BRIDGE_KEY_FILE",
+        "/home/netherslayer87/support_chat_bridge_key.txt",
+    ).strip()
+    if not key_path:
+        return ""
+    try:
+        with open(key_path, "r", encoding="utf-8") as key_file:
+            return key_file.read().strip()
+    except OSError:
+        return ""
+
+
+def _support_chat_channel_id() -> Optional[int]:
+    raw = os.getenv("SUPPORT_CHAT_CHANNEL_ID", "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _support_chat_authorized(request: web.Request) -> bool:
+    configured = _support_chat_bridge_key()
+    authorization = request.headers.get("Authorization", "").strip()
+    provided = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    return bool(configured and provided and hmac.compare_digest(provided, configured))
+
+
+async def support_chat_relay_message(request: web.Request) -> web.Response:
+    if not _support_chat_authorized(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    if not bot.is_ready():
+        return web.json_response({"error": "SmokeBot is not ready"}, status=503)
+
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    configured_channel_id = _support_chat_channel_id()
+    thread_id = str(payload.get("threadId") or "").strip()
+    content = str(payload.get("content") or "").strip()
+    starter_content = str(payload.get("starterContent") or "").strip()
+    thread_name = str(payload.get("threadName") or "").strip()
+
+    if len(content) > 2000 or len(starter_content) > 2000:
+        return web.json_response({"error": "Discord messages cannot exceed 2000 characters"}, status=400)
+
+    thread: Optional[discord.Thread] = None
+    starter_message_id: Optional[int] = None
+    if thread_id:
+        try:
+            resolved = bot.get_channel(int(thread_id)) or await bot.fetch_channel(int(thread_id))
+        except (ValueError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return web.json_response({"error": "Thread not found"}, status=404)
+        if not isinstance(resolved, discord.Thread):
+            return web.json_response({"error": "Channel is not a thread"}, status=400)
+        if configured_channel_id and resolved.parent_id != configured_channel_id:
+            return web.json_response({"error": "Thread is outside the support channel"}, status=403)
+        thread = resolved
+    else:
+        if not configured_channel_id:
+            return web.json_response({"error": "Support channel is not configured"}, status=503)
+        if not starter_content or not thread_name:
+            return web.json_response({"error": "starterContent and threadName are required"}, status=400)
+        try:
+            parent = bot.get_channel(configured_channel_id) or await bot.fetch_channel(configured_channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return web.json_response({"error": "Support channel not found"}, status=404)
+        if not isinstance(parent, discord.TextChannel):
+            return web.json_response({"error": "Support channel must be a text channel"}, status=400)
+        try:
+            starter = await parent.send(
+                starter_content,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            thread = await starter.create_thread(
+                name=thread_name[:100],
+                auto_archive_duration=resolve_archive_duration(1440),
+            )
+            starter_message_id = starter.id
+        except discord.Forbidden:
+            return web.json_response({"error": "SmokeBot is missing channel or thread permissions"}, status=403)
+        except discord.HTTPException as exc:
+            logger.exception("SmokeBot could not create a support-chat thread")
+            return web.json_response({"error": f"Discord rejected the thread request: {exc}"}, status=502)
+
+    if content:
+        try:
+            await thread.send(content, allowed_mentions=discord.AllowedMentions.none())
+        except discord.Forbidden:
+            return web.json_response({"error": "SmokeBot cannot send messages in this thread"}, status=403)
+        except discord.HTTPException as exc:
+            logger.exception("SmokeBot could not relay a support-chat message")
+            return web.json_response({"error": f"Discord rejected the message: {exc}"}, status=502)
+
+    return web.json_response(
+        {
+            "ok": True,
+            "threadId": str(thread.id),
+            "starterMessageId": str(starter_message_id or ""),
+        }
+    )
+
+
 def _script_api_bot_has_guild(guild_id: str) -> bool:
     try:
         guild_int = int(guild_id)
@@ -1373,6 +1483,7 @@ async def start_script_manager_api():
     app.router.add_get("/api/script-triggers/{guild_id}", script_api_get_triggers)
     app.router.add_put("/api/script-triggers/{guild_id}/{name}", script_api_upsert_trigger)
     app.router.add_delete("/api/script-triggers/{guild_id}/{name}", script_api_delete_trigger)
+    app.router.add_post("/api/support-chat/messages", support_chat_relay_message)
 
     script_api_runner = web.AppRunner(app)
     await script_api_runner.setup()
