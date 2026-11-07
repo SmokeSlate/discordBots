@@ -12,6 +12,7 @@ class AutoUpdateTests(unittest.TestCase):
             Mock(returncode=0, stdout="", stderr=""),
             Mock(returncode=0, stdout="abc\n", stderr=""),
             Mock(returncode=0, stdout="def\n", stderr=""),
+            Mock(returncode=0, stdout="0\t1\n", stderr=""),
         ]
 
         status = get_git_update_status(".", "origin", "main")

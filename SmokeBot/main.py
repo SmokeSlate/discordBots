@@ -80,6 +80,10 @@ giveaways = {}
 script_triggers = {}
 auto_update_task = None
 auto_update_lock = asyncio.Lock()
+giveaway_completion_lock = asyncio.Lock()
+giveaway_tasks = {}
+pin_lock = asyncio.Lock()
+autoreply_pending = set()
 
 ALLOWED_SCRIPT_GUILDS = {1385295315245989999, 1102679144178921522}
 TRUSTED_SCRIPT_USER_ID = 823654955025956895
@@ -249,70 +253,85 @@ async def update_giveaway_message(giveaway_id: str):
 
 
 async def conclude_giveaway(giveaway_id: str):
-    data = giveaways.get(giveaway_id)
-    if not data or data.get("ended"):
-        return
+    async with giveaway_completion_lock:
+        data = giveaways.get(giveaway_id)
+        if not data or data.get("ended"):
+            return
 
-    channel_id = data.get("channel_id")
-    try:
-        channel_id_int = int(channel_id)
-    except (TypeError, ValueError):
-        channel_id_int = None
-
-    channel = bot.get_channel(channel_id_int) if channel_id_int else None
-    if channel is None and channel_id_int:
+        channel_id = data.get("channel_id")
         try:
-            channel = await bot.fetch_channel(channel_id_int)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            channel = None
+            channel_id_int = int(channel_id)
+        except (TypeError, ValueError):
+            channel_id_int = None
 
-    message = None
-    if channel is not None:
-        try:
-            message = await channel.fetch_message(int(giveaway_id))
-        except (discord.NotFound, discord.HTTPException):
-            message = None
+        channel = bot.get_channel(channel_id_int) if channel_id_int else None
+        if channel is None and channel_id_int:
+            try:
+                channel = await bot.fetch_channel(channel_id_int)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                channel = None
 
-    participants = data.get("participants", [])
-    winner_count = max(1, int(data.get("winner_count", 1)))
-    if len(participants) < winner_count:
-        winner_count = len(participants)
+        message = None
+        if channel is not None:
+            try:
+                message = await channel.fetch_message(int(giveaway_id))
+            except (discord.NotFound, discord.HTTPException):
+                message = None
 
-    if winner_count > 0:
-        winners = random.sample(participants, k=winner_count)
-    else:
-        winners = []
+        participants = data.get("participants", [])
+        winner_count = max(1, int(data.get("winner_count", 1)))
+        if len(participants) < winner_count:
+            winner_count = len(participants)
 
-    data["ended"] = True
-    data["final_winners"] = winners
-    save_giveaways()
+        if winner_count > 0:
+            winners = random.sample(participants, k=winner_count)
+        else:
+            winners = []
 
-    if message is not None:
-        try:
-            await message.edit(embed=build_giveaway_embed(data), view=GiveawayJoinView(giveaway_id, disabled=True))
-        except discord.HTTPException:
-            pass
+        data["ended"] = True
+        data["final_winners"] = winners
+        save_giveaways()
 
-    if channel is not None:
-        try:
-            if winners:
-                mentions = ", ".join(f"<@{wid}>" for wid in winners)
-                announcement = (
-                    f"🎉 Giveaway ended for **{data.get('prize', 'a prize')}**!\n"
-                    f"Winners: {mentions}"
-                )
-                host_id = data.get("host_id")
-                if host_id:
-                    announcement += f"\nHosted by <@{host_id}>"
-            else:
-                announcement = f"😕 Giveaway for **{data.get('prize', 'a prize')}** ended with no valid entries."
+        if message is not None:
+            try:
+                await message.edit(embed=build_giveaway_embed(data), view=GiveawayJoinView(giveaway_id, disabled=True))
+            except discord.HTTPException:
+                pass
 
-            if message is not None:
-                announcement += f"\n{message.jump_url}"
+        if channel is not None:
+            try:
+                if winners:
+                    mentions = ", ".join(f"<@{wid}>" for wid in winners)
+                    announcement = (
+                        f"🎉 Giveaway ended for **{data.get('prize', 'a prize')}**!\n"
+                        f"Winners: {mentions}"
+                    )
+                    host_id = data.get("host_id")
+                    if host_id:
+                        announcement += f"\nHosted by <@{host_id}>"
+                else:
+                    announcement = f"😕 Giveaway for **{data.get('prize', 'a prize')}** ended with no valid entries."
 
-            await channel.send(announcement)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+                if message is not None:
+                    announcement += f"\n{message.jump_url}"
+
+                await channel.send(announcement)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+
+def queue_giveaway_end(giveaway_id):
+    task = giveaway_tasks.get(giveaway_id)
+    if task is None or task.done():
+        task = asyncio.create_task(schedule_giveaway_end(giveaway_id))
+        giveaway_tasks[giveaway_id] = task
+        def finished(completed):
+            if giveaway_tasks.get(giveaway_id) is completed:
+                giveaway_tasks.pop(giveaway_id, None)
+            if not completed.cancelled() and completed.exception():
+                logger.error("Giveaway scheduling failed for %s", giveaway_id, exc_info=completed.exception())
+        task.add_done_callback(finished)
+    return task
 
 
 async def schedule_giveaway_end(giveaway_id: str):
@@ -489,7 +508,7 @@ def parse_duration_string(raw: Optional[str]) -> Tuple[Optional[int], Optional[s
 
     total = 0
     matches = list(re.finditer(r"(\d+)([smhdw])", text))
-    if not matches:
+    if not matches or not re.fullmatch(r"(?:[0-9]+[smhdw]\s*)+", text):
         return None, "Use formats like 30s, 5m, 2h, 1d, or 1w (combinable)."
 
     for match in matches:
@@ -780,8 +799,8 @@ def determine_autoreply_cooldown_bucket(entry: dict, message: discord.Message) -
         thread_id = getattr(message.channel, "id", None)
         bucket = f"thread:{thread_id}" if thread_id else f"channel:{message.channel.id}"
     elif scope == "role":
-        roles = member_role_ids(message.author)
-        primary = roles[0] if roles else "norole"
+        top_role = getattr(message.author, "top_role", None)
+        primary = str(top_role.id) if top_role and top_role.id != message.guild.id else "norole"
         bucket = f"role:{message.guild.id}:{primary}"
     else:
         bucket = f"guild:{message.guild.id}"
@@ -793,10 +812,10 @@ def autoreply_on_cooldown(guild_id: str, name: str, bucket: Optional[str], secon
     if not bucket or seconds <= 0:
         return False
 
-    now = datetime.now(timezone.utc).timestamp()
+    now = time.monotonic()
     trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
     last = trigger_cooldowns.get(bucket)
-    if last and now - last < seconds:
+    if last is not None and now - last < seconds:
         return True
     return False
 
@@ -805,7 +824,7 @@ def mark_autoreply_cooldown(guild_id: str, name: str, bucket: Optional[str]):
     if not bucket:
         return
     trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
-    trigger_cooldowns[bucket] = datetime.now(timezone.utc).timestamp()
+    trigger_cooldowns[bucket] = time.monotonic()
 
 
 async def render_auto_reply_content(
@@ -828,7 +847,7 @@ async def render_auto_reply_content(
     return content
 
 
-async def dispatch_auto_reply(
+async def _deliver_auto_reply(
     message: discord.Message,
     name: str,
     entry: dict,
@@ -841,10 +860,6 @@ async def dispatch_auto_reply(
         return False
 
     gid = str(message.guild.id)
-    bucket, seconds = determine_autoreply_cooldown_bucket(entry, message)
-    if autoreply_on_cooldown(gid, name, bucket, seconds):
-        return False
-
     snippet_trigger = str(entry.get("snippet") or "").strip()
     if snippet_trigger:
         guild_snippets = snippets.get(gid, {})
@@ -860,8 +875,6 @@ async def dispatch_auto_reply(
                 args,
                 delete_trigger=False,
             )
-            if handled:
-                mark_autoreply_cooldown(gid, name, bucket)
             return handled
 
     content = await render_auto_reply_content(message, entry, match)
@@ -882,8 +895,29 @@ async def dispatch_auto_reply(
     except discord.HTTPException:
         return False
 
-    mark_autoreply_cooldown(gid, name, bucket)
     return True
+
+
+async def dispatch_auto_reply(message, name, entry, match):
+    if not message.guild:
+        return False
+    gid = str(message.guild.id)
+    bucket, seconds = determine_autoreply_cooldown_bucket(entry, message)
+    key = (gid, name, bucket)
+    reserved = bool(bucket and seconds > 0)
+    if reserved:
+        if key in autoreply_pending or autoreply_on_cooldown(gid, name, bucket, seconds):
+            return False
+        # No await between checking and reserving. Failed deliveries release the bucket.
+        autoreply_pending.add(key)
+    try:
+        delivered = await _deliver_auto_reply(message, name, entry, match)
+        if delivered and reserved:
+            mark_autoreply_cooldown(gid, name, bucket)
+        return delivered
+    finally:
+        if reserved:
+            autoreply_pending.discard(key)
 
 # =====================================================
 # Script Triggers (Python snippets)
@@ -2754,7 +2788,11 @@ async def perform_auto_update_check():
             return
 
         if status.get("up_to_date", True):
-            print("[auto-update] no updates available")
+            print(f"[auto-update] no updates available ({status.get('relationship', 'equal')})")
+            return
+
+        if not status.get("can_fast_forward", False):
+            print("[auto-update] local and remote history diverged; manual reconciliation required")
             return
 
         print(
@@ -2774,6 +2812,9 @@ async def perform_auto_update_check():
             )
             return
 
+        if not update_result.get("changed", False):
+            print("[auto-update] HEAD did not change; no restart")
+            return
         print("[auto-update] update applied successfully, restarting bot process")
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -2823,7 +2864,7 @@ async def on_ready():
             bot.add_view(GiveawayJoinView(message_id))
         except Exception as e:
             print(f"Failed to add giveaway view for {message_id}: {e}")
-        asyncio.create_task(schedule_giveaway_end(message_id))
+        queue_giveaway_end(message_id)
 
     # Persistent UI so dropdown/buttons survive restarts
     try:
@@ -3262,7 +3303,7 @@ async def start_giveaway(
     else:
         bot.add_view(view)
 
-    asyncio.create_task(schedule_giveaway_end(giveaway_id))
+    queue_giveaway_end(giveaway_id)
 
     end_ts = int(end_time.timestamp())
     await interaction.followup.send(
@@ -3704,7 +3745,7 @@ async def autoreply_options(
     if name not in guild_replies:
         return await interaction.response.send_message("❌ Auto reply not found.", ephemeral=True)
 
-    entry = ensure_autoreply_defaults(guild_replies[name])
+    entry = ensure_autoreply_defaults(dict(guild_replies[name]))
 
     if include_roles is not None:
         if include_roles.strip().lower() in {"", "none", "clear", "reset", "off"}:
@@ -4408,36 +4449,37 @@ async def on_message(message):
 
 async def handle_pin_repost(message):
     """Repost the tracked 'pinned' message so it stays at the bottom."""
-    try:
-        channel_id = str(message.channel.id)
-        pinned_messages = load_pinned_messages()
-        current_pin = None
-        current_pin_id = None
+    async with pin_lock:
+        try:
+            channel_id = str(message.channel.id)
+            pinned_messages = load_pinned_messages()
+            current_pin = None
+            current_pin_id = None
 
-        for pin_id, data in pinned_messages.items():
-            if data['channel_id'] == channel_id:
-                current_pin = data
-                current_pin_id = pin_id
-                break
+            for pin_id, data in pinned_messages.items():
+                if data['channel_id'] == channel_id:
+                    current_pin = data
+                    current_pin_id = pin_id
+                    break
 
-        if current_pin:
-            try:
-                old_message = await message.channel.fetch_message(int(current_pin_id))
-                await old_message.delete()
-            except discord.NotFound:
-                pass
+            if current_pin:
+                try:
+                    old_message = await message.channel.fetch_message(int(current_pin_id))
+                    await old_message.delete()
+                except discord.NotFound:
+                    pass
 
-            pin_content = f"{current_pin['content']}"
-            new_pinned_msg = await message.channel.send(pin_content)
+                pin_content = f"{current_pin['content']}"
+                new_pinned_msg = await message.channel.send(pin_content)
 
-            del pinned_messages[current_pin_id]
-            pinned_messages[str(new_pinned_msg.id)] = current_pin
-            write_json('pinned_messages.json', pinned_messages)
+                del pinned_messages[current_pin_id]
+                pinned_messages[str(new_pinned_msg.id)] = current_pin
+                write_json('pinned_messages.json', pinned_messages)
 
-    except discord.Forbidden:
-        pass
-    except Exception as e:
-        print(f"Error handling pin repost: {e}")
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            print(f"Error handling pin repost: {e}")
 
 @bot.tree.command(name="setpin", description="Set a pinned message that stays at the bottom of the channel")
 @app_commands.describe(content="The text content for the pinned message")
@@ -4445,41 +4487,42 @@ async def handle_pin_repost(message):
 async def set_pin(interaction: discord.Interaction, content: str):
     if not interaction.guild:
         return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-    if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
-    try:
-        guild_id = str(interaction.guild.id)
-        channel_id = str(interaction.channel.id)
+    async with pin_lock:
+        if not has_permissions_or_override(interaction):
+            return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+        try:
+            guild_id = str(interaction.guild.id)
+            channel_id = str(interaction.channel.id)
 
-        pinned_messages = load_pinned_messages()
+            pinned_messages = load_pinned_messages()
 
-        # Remove existing pin in this channel
-        for pin_id, data in list(pinned_messages.items()):
-            if data['channel_id'] == channel_id:
-                try:
-                    old_message = await interaction.channel.fetch_message(int(pin_id))
-                    await old_message.delete()
-                except discord.NotFound:
-                    pass
-                del pinned_messages[pin_id]
+            # Remove existing pin in this channel
+            for pin_id, data in list(pinned_messages.items()):
+                if data['channel_id'] == channel_id:
+                    try:
+                        old_message = await interaction.channel.fetch_message(int(pin_id))
+                        await old_message.delete()
+                    except discord.NotFound:
+                        pass
+                    del pinned_messages[pin_id]
 
-        pin_content = f"{content}"
-        pinned_msg = await interaction.channel.send(pin_content)
+            pin_content = f"{content}"
+            pinned_msg = await interaction.channel.send(pin_content)
 
-        pinned_messages[str(pinned_msg.id)] = {
-            'content': content,
-            'channel_id': channel_id,
-            'guild_id': guild_id,
-            'author_id': interaction.user.id
-        }
-        write_json('pinned_messages.json', pinned_messages)
+            pinned_messages[str(pinned_msg.id)] = {
+                'content': content,
+                'channel_id': channel_id,
+                'guild_id': guild_id,
+                'author_id': interaction.user.id
+            }
+            write_json('pinned_messages.json', pinned_messages)
 
-        await interaction.response.send_message("✅ Pinned message set! It will stay at the bottom of the channel.", ephemeral=True)
+            await interaction.response.send_message("✅ Pinned message set! It will stay at the bottom of the channel.", ephemeral=True)
 
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to send messages!", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.response.send_message(f"❌ Failed to set pinned message: {e}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to send messages!", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ Failed to set pinned message: {e}", ephemeral=True)
 
 @bot.tree.command(name="removepin", description="Remove a pinned message (current channel)")
 @app_commands.describe(message_id="Optional: specific pinned message ID. If omitted, removes this channel's tracked pin.")
@@ -4487,47 +4530,48 @@ async def set_pin(interaction: discord.Interaction, content: str):
 async def remove_pin(interaction: discord.Interaction, message_id: Optional[str] = None):
     if not interaction.guild:
         return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-    if not has_permissions_or_override(interaction):
-        return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+    async with pin_lock:
+        if not has_permissions_or_override(interaction):
+            return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
-    pinned_messages = load_pinned_messages()
-    channel_id = str(interaction.channel.id)
+        pinned_messages = load_pinned_messages()
+        channel_id = str(interaction.channel.id)
 
-    async def try_delete(mid: int):
+        async def try_delete(mid: int):
+            try:
+                msg = await interaction.channel.fetch_message(mid)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+
         try:
-            msg = await interaction.channel.fetch_message(mid)
-            await msg.delete()
-        except discord.NotFound:
-            pass
-
-    try:
-        if message_id:
-            mid = int(message_id)
-            if str(mid) in pinned_messages and pinned_messages[str(mid)]['channel_id'] == channel_id:
-                await try_delete(mid)
-                del pinned_messages[str(mid)]
+            if message_id:
+                mid = int(message_id)
+                if str(mid) in pinned_messages and pinned_messages[str(mid)]['channel_id'] == channel_id:
+                    await try_delete(mid)
+                    del pinned_messages[str(mid)]
+                    write_json('pinned_messages.json', pinned_messages)
+                    return await interaction.response.send_message("✅ Pinned message removed!", ephemeral=True)
+                else:
+                    return await interaction.response.send_message("❌ This is not a tracked pinned message for this channel!", ephemeral=True)
+            else:
+                removed_any = False
+                for pin_id, data in list(pinned_messages.items()):
+                    if data['channel_id'] == channel_id:
+                        await try_delete(int(pin_id))
+                        del pinned_messages[pin_id]
+                        removed_any = True
                 write_json('pinned_messages.json', pinned_messages)
-                return await interaction.response.send_message("✅ Pinned message removed!", ephemeral=True)
-            else:
-                return await interaction.response.send_message("❌ This is not a tracked pinned message for this channel!", ephemeral=True)
-        else:
-            removed_any = False
-            for pin_id, data in list(pinned_messages.items()):
-                if data['channel_id'] == channel_id:
-                    await try_delete(int(pin_id))
-                    del pinned_messages[pin_id]
-                    removed_any = True
-            write_json('pinned_messages.json', pinned_messages)
-            if removed_any:
-                return await interaction.response.send_message("✅ Channel pinned message removed!", ephemeral=True)
-            else:
-                return await interaction.response.send_message("❌ No tracked pinned message in this channel!", ephemeral=True)
-    except ValueError:
-        return await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
-    except discord.Forbidden:
-        return await interaction.response.send_message("❌ I don't have permission to delete messages!", ephemeral=True)
-    except discord.HTTPException as e:
-        return await interaction.response.send_message(f"❌ Failed to remove pinned message: {e}", ephemeral=True)
+                if removed_any:
+                    return await interaction.response.send_message("✅ Channel pinned message removed!", ephemeral=True)
+                else:
+                    return await interaction.response.send_message("❌ No tracked pinned message in this channel!", ephemeral=True)
+        except ValueError:
+            return await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
+        except discord.Forbidden:
+            return await interaction.response.send_message("❌ I don't have permission to delete messages!", ephemeral=True)
+        except discord.HTTPException as e:
+            return await interaction.response.send_message(f"❌ Failed to remove pinned message: {e}", ephemeral=True)
 
 @bot.tree.command(name="listpins", description="Show the pinned message(s) for this channel")
 @app_commands.guild_only()

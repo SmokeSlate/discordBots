@@ -36,9 +36,21 @@ def get_git_update_status(repo_dir: str, remote: str = "origin", branch: str = "
 
     local_value = local_sha.stdout.strip()
     remote_value = remote_sha.stdout.strip()
+    counts = _run_git(repo, "rev-list", "--left-right", "--count", f"HEAD...{remote}/{branch}")
+    if counts.returncode != 0:
+        return {"ok": False, "reason": "ancestry_failed", "details": counts.stderr.strip()}
+    try:
+        ahead, behind = map(int, counts.stdout.split())
+    except ValueError:
+        return {"ok": False, "reason": "invalid_ancestry", "details": "Expected ahead/behind counts"}
+    relationship = "diverged" if ahead and behind else "behind" if behind else "ahead" if ahead else "equal"
     return {
         "ok": True,
-        "up_to_date": local_value == remote_value,
+        "up_to_date": behind == 0,
+        "can_fast_forward": behind > 0 and ahead == 0,
+        "relationship": relationship,
+        "ahead": ahead,
+        "behind": behind,
         "local_sha": local_value,
         "remote_sha": remote_value,
     }
@@ -47,9 +59,12 @@ def get_git_update_status(repo_dir: str, remote: str = "origin", branch: str = "
 def apply_git_update(repo_dir: str, remote: str = "origin", branch: str = "main") -> Dict[str, Any]:
     """Apply a fast-forward only update from remote branch."""
     repo = Path(repo_dir)
+    before = _run_git(repo, "rev-parse", "HEAD")
     pull = _run_git(repo, "pull", "--ff-only", remote, branch)
+    after = _run_git(repo, "rev-parse", "HEAD")
     return {
-        "ok": pull.returncode == 0,
+        "ok": pull.returncode == 0 and before.returncode == 0 and after.returncode == 0,
+        "changed": pull.returncode == 0 and before.returncode == 0 and after.returncode == 0 and before.stdout.strip() != after.stdout.strip(),
         "stdout": pull.stdout.strip(),
         "stderr": pull.stderr.strip(),
         "code": pull.returncode,
