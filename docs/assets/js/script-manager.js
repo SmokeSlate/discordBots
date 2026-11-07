@@ -56,6 +56,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let editingName = null;
   let cachedScripts = {};
+  let loadedGuildId = null;
+  let loadGeneration = 0;
 
   const templateLibrary = {
     send_message: {
@@ -127,15 +129,16 @@ document.addEventListener("DOMContentLoaded", () => {
         "send('🔒 Thread locked.')",
       ].join("\n"),
     },
-    welcome_thread: {
+    welcome_message: {
       event: "member_join",
       match_type: "contains",
       pattern: "",
       code: [
-        "send_in_thread(",
-        "    f'Welcome {member.mention}! Reply here if you need help.',",
-        "    thread_name=f'Welcome — {member.display_name}',",
-        ")",
+        "# Replace with the destination channel ID before saving.",
+        "WELCOME_CHANNEL_ID = 0",
+        "if not WELCOME_CHANNEL_ID:",
+        "    raise ValueError('Configure WELCOME_CHANNEL_ID first')",
+        "send(f'Welcome {member.mention}!', channel_id=WELCOME_CHANNEL_ID)",
       ].join("\n"),
     },
   };
@@ -241,17 +244,16 @@ document.addEventListener("DOMContentLoaded", () => {
     return json;
   };
 
-  const parseChannelIds = (value) =>
-    [...new Set(
-      value
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .map((part) => (part.match(/\d+/) || [null])[0])
-        .filter(Boolean)
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id)),
-    )];
+  const parseChannelIds = (value) => {
+    const ids = value.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+      const match = part.match(/^(?:<#)?([1-9][0-9]{0,19})>?$/);
+      if (!match || BigInt(match[1]) > 18446744073709551615n) {
+        throw new Error("Use comma-separated channel IDs or channel mentions.");
+      }
+      return match[1];
+    });
+    return [...new Set(ids)];
+  };
 
   const channelIdsToText = (ids = []) => ids.map((id) => String(id)).join(", ");
 
@@ -281,6 +283,8 @@ document.addEventListener("DOMContentLoaded", () => {
     guildSelect.innerHTML = '<option value="">Select a server</option>';
     userField.value = "";
     cachedScripts = {};
+    loadedGuildId = null;
+    loadGeneration += 1;
     resetForm();
     renderList();
     setFormEnabled(false);
@@ -360,19 +364,27 @@ document.addEventListener("DOMContentLoaded", () => {
       const entry = cachedScripts[name];
       const wrapper = document.createElement("article");
       wrapper.className = "band";
-      wrapper.innerHTML = `
-        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-          <div>
-            <h3 class="text-lg text-white font-semibold">${name}</h3>
-            <p class="text-subtle">event: ${entry.event || "message"} • match: ${entry.match_type || "contains"} • enabled: ${entry.enabled !== false ? "yes" : "no"}</p>
-            <p class="text-subtle">pattern: <code>${entry.pattern || "(none)"}</code></p>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn-retro secondary hover-crt text-sm" data-action="edit" data-name="${name}" type="button">Edit</button>
-            <button class="btn-retro secondary hover-crt text-sm" data-action="delete" data-name="${name}" type="button">Delete</button>
-          </div>
-        </div>
-      `;
+      const title = document.createElement("h3");
+      title.className = "text-lg text-white font-semibold";
+      title.textContent = name;
+      const details = document.createElement("p");
+      details.className = "text-subtle";
+      details.textContent = `event: ${entry.event || "message"} • match: ${entry.match_type || "contains"} • enabled: ${entry.enabled !== false ? "yes" : "no"}`;
+      const pattern = document.createElement("p");
+      pattern.className = "text-subtle";
+      pattern.textContent = `pattern: ${entry.pattern || "(none)"}`;
+      wrapper.appendChild(title);
+      wrapper.appendChild(details);
+      wrapper.appendChild(pattern);
+      for (const action of ["edit", "delete"]) {
+        const button = document.createElement("button");
+        button.className = "btn-retro secondary hover-crt text-sm";
+        button.type = "button";
+        button.dataset.action = action;
+        button.dataset.name = name;
+        button.textContent = action === "edit" ? "Edit" : "Delete";
+        wrapper.appendChild(button);
+      }
       list.appendChild(wrapper);
     });
   };
@@ -385,9 +397,18 @@ document.addEventListener("DOMContentLoaded", () => {
     return guildId;
   };
 
+  const requireLoadedGuild = () => {
+    const guildId = ensureGuildSelected();
+    if (guildId !== loadedGuildId) throw new Error("Load this server before editing scripts.");
+    return guildId;
+  };
+
   const fetchScripts = async () => {
     const guildId = ensureGuildSelected();
+    const generation = ++loadGeneration;
     const response = await apiRequest(`/api/script-triggers/${guildId}`);
+    if (generation !== loadGeneration || guildId !== guildSelect.value) return;
+    loadedGuildId = guildId;
     cachedScripts = response.triggers || {};
     renderList();
     setSessionStatus("Loaded scripts from hosted bot API.");
@@ -426,7 +447,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       setSelectedGuild(guildSelect.value);
       await fetchScripts();
-      setFormEnabled(true);
+      setFormEnabled(loadedGuildId === guildSelect.value);
     } catch (error) {
       setSessionStatus(error.message, true);
     }
@@ -437,7 +458,7 @@ document.addEventListener("DOMContentLoaded", () => {
       await fetchManageableGuilds();
       if (guildSelect.value) {
         await fetchScripts();
-        setFormEnabled(true);
+        setFormEnabled(loadedGuildId === guildSelect.value);
         return;
       }
 
@@ -464,6 +485,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   guildSelect.addEventListener("change", () => {
     setSelectedGuild(guildSelect.value);
+    loadGeneration += 1;
+    loadedGuildId = null;
+    cachedScripts = {};
+    resetForm();
+    renderList();
+    setFormEnabled(false);
+    setSessionStatus("Load this server before editing scripts.");
   });
 
   scriptForm.addEventListener("submit", async (event) => {
@@ -475,24 +503,26 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const payload = {
-      event: fields.event.value,
-      pattern: fields.pattern.value.trim(),
-      match_type: fields.matchType.value,
-      channel_ids: parseChannelIds(fields.channelIds.value),
-      enabled: Boolean(fields.enabled.checked),
-      code: fields.code.value,
-    };
-
     try {
-      const guildId = ensureGuildSelected();
+      const guildId = requireLoadedGuild();
+      const originalName = editingName;
+      const payload = {
+        event: fields.event.value,
+        pattern: fields.pattern.value.trim(),
+        match_type: fields.matchType.value,
+        channel_ids: parseChannelIds(fields.channelIds.value),
+        enabled: Boolean(fields.enabled.checked),
+        code: fields.code.value,
+      };
+
       await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(name)}`, {
         method: "PUT",
         body: JSON.stringify(payload),
       });
 
-      if (editingName && editingName !== name) {
-        await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(editingName)}`, {
+      if (guildId !== loadedGuildId || guildId !== guildSelect.value) return;
+      if (originalName && originalName !== name) {
+        await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(originalName)}`, {
           method: "DELETE",
         });
       }
@@ -517,6 +547,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    if (loadedGuildId !== guildSelect.value) return;
     if (action === "edit") {
       const entry = cachedScripts[name];
       if (entry) {
@@ -532,7 +563,7 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
 
-        const guildId = ensureGuildSelected();
+        const guildId = requireLoadedGuild();
         await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(name)}`, {
           method: "DELETE",
         });
@@ -607,7 +638,7 @@ document.addEventListener("DOMContentLoaded", () => {
       await fetchManageableGuilds();
       if (guildSelect.value) {
         await fetchScripts();
-        setFormEnabled(true);
+        setFormEnabled(loadedGuildId === guildSelect.value);
       } else {
         setSessionStatus("Choose a server to load scripts.");
       }
