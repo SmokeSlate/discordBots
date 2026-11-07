@@ -45,6 +45,14 @@ class ScriptSecurityTests(unittest.IsolatedAsyncioTestCase):
         entry=m._sanitize_script_entry({'code':'pass','event':'message','pattern':'hi','channel_ids':['123456789012345678']})
         self.assertEqual(entry['channel_ids'],['123456789012345678'])
 
+    async def test_oauth_return_url_cannot_downgrade_the_configured_origin(self):
+        with patch.object(m, '_script_manager_site_origin', return_value='https://bot.example.test'):
+            self.assertTrue(m._script_manager_is_allowed_return_url('https://bot.example.test/scripts/'))
+            self.assertFalse(m._script_manager_is_allowed_return_url('http://bot.example.test/scripts/'))
+            self.assertFalse(m._script_manager_is_allowed_return_url('https://other.example.test/scripts/'))
+        with patch.object(m, '_script_manager_site_origin', return_value='http://localhost:8080'):
+            self.assertTrue(m._script_manager_is_allowed_return_url('http://localhost:8080/scripts/'))
+
     async def test_missing_state_rejected_before_token_exchange(self):
         with patch.object(m.urllib.request,'urlopen') as exchange:
             try:

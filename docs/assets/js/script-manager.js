@@ -403,6 +403,9 @@ document.addEventListener("DOMContentLoaded", () => {
     return guildId;
   };
 
+  const workspaceIsCurrent = (guildId, generation) =>
+    guildId === loadedGuildId && guildId === guildSelect.value && generation === loadGeneration;
+
   const fetchScripts = async () => {
     const guildId = ensureGuildSelected();
     const generation = ++loadGeneration;
@@ -503,6 +506,8 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    const operationGuild = loadedGuildId;
+    let generation = loadGeneration;
     try {
       const guildId = requireLoadedGuild();
       const originalName = editingName;
@@ -520,18 +525,22 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload),
       });
 
-      if (guildId !== loadedGuildId || guildId !== guildSelect.value) return;
+      if (!workspaceIsCurrent(guildId, generation)) return;
       if (originalName && originalName !== name) {
         await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(originalName)}`, {
           method: "DELETE",
         });
       }
 
+      if (!workspaceIsCurrent(guildId, generation)) return;
       editingName = name;
-      await fetchScripts();
+      const refresh = fetchScripts();
+      generation = loadGeneration;
+      await refresh;
+      if (!workspaceIsCurrent(guildId, generation)) return;
       setEditorStatus(`Saved script trigger "${name}".`);
     } catch (error) {
-      setEditorStatus(error.message, true);
+      if (!operationGuild || workspaceIsCurrent(operationGuild, generation)) setEditorStatus(error.message, true);
     }
   });
 
@@ -557,6 +566,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (action === "delete") {
+      const operationGuild = loadedGuildId;
+      let generation = loadGeneration;
       try {
         const confirmed = window.confirm(`Delete "${name}"? This cannot be undone.`);
         if (!confirmed) {
@@ -567,13 +578,17 @@ document.addEventListener("DOMContentLoaded", () => {
         await apiRequest(`/api/script-triggers/${guildId}/${encodeURIComponent(name)}`, {
           method: "DELETE",
         });
+        if (!workspaceIsCurrent(guildId, generation)) return;
         if (editingName === name) {
           resetForm();
         }
-        await fetchScripts();
+        const refresh = fetchScripts();
+        generation = loadGeneration;
+        await refresh;
+        if (!workspaceIsCurrent(guildId, generation)) return;
         setEditorStatus(`Deleted script trigger "${name}".`);
       } catch (error) {
-        setEditorStatus(error.message, true);
+        if (workspaceIsCurrent(operationGuild, generation)) setEditorStatus(error.message, true);
       }
     }
   });
