@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import random
+import secrets
 import re
 import sys
 import time
@@ -65,6 +66,8 @@ script_api_runner: Optional[web.AppRunner] = None
 script_api_sites: List[web.BaseSite] = []
 script_api_lock = asyncio.Lock()
 discord_token_cache: Dict[str, Tuple[float, dict]] = {}
+oauth_states: Dict[str, Tuple[float, str]] = {}
+OAUTH_STATE_COOKIE = "smokebot_oauth_state"
 
 reaction_roles = {}
 ticket_data = {}
@@ -905,7 +908,7 @@ def load_script_triggers():
                 normalized_channels = []
                 for channel_id in channel_ids:
                     try:
-                        normalized_channels.append(int(channel_id))
+                        normalized_channels.append(str(int(channel_id)))
                     except (TypeError, ValueError):
                         continue
                 if normalized_channels != channel_ids:
@@ -974,16 +977,7 @@ def _script_manager_is_allowed_return_url(url: str) -> bool:
         allowed = urllib.parse.urlparse(_script_manager_site_origin())
     except Exception:
         return False
-    return parsed.scheme in {"http", "https"} and parsed.netloc == allowed.netloc
-
-
-def _script_manager_encode_state(return_url: str) -> str:
-    return base64.urlsafe_b64encode(return_url.encode("utf-8")).decode("ascii")
-
-
-def _script_manager_decode_state(state: str) -> str:
-    padded = state + "=" * (-len(state) % 4)
-    return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    return allowed.scheme in {"http", "https"} and parsed.scheme == allowed.scheme and parsed.netloc == allowed.netloc
 
 
 def _script_api_response_headers(request: web.Request) -> Dict[str, str]:
@@ -1235,6 +1229,8 @@ async def _script_api_can_manage_guild(request: web.Request, guild_id: str) -> T
         return False, error or "Unauthorized"
 
     if identity:
+        if str(identity.get("id")) != str(TRUSTED_SCRIPT_USER_ID):
+            return False, "Only the configured host operator can manage Python scripts"
         member = await _script_api_get_member_for_guild(str(identity.get("id") or ""), guild_id)
         if member is None:
             return False, "You do not have access to this server"
@@ -1253,21 +1249,37 @@ def _script_api_guild_allowed(guild_id: str) -> bool:
 
 
 def _sanitize_script_entry(payload: dict) -> dict:
-    entry = ensure_script_trigger_defaults(payload if isinstance(payload, dict) else {})
-    channel_ids = entry.get("channel_ids") or []
-    valid_channel_ids = []
-    for channel_id in channel_ids:
+    if not isinstance(payload, dict):
+        raise ValueError("Script payload must be an object")
+    entry = ensure_script_trigger_defaults(dict(payload))
+    events = {"message", "message_all", "reply", "reaction_add", "reaction_remove", "member_join", "member_leave"}
+    if entry["event"] not in events or entry["match_type"] not in {"contains", "exact", "regex"}:
+        raise ValueError("Unsupported event or match type")
+    if not isinstance(entry["enabled"], bool):
+        raise ValueError("enabled must be a boolean")
+    if not isinstance(entry["code"], str) or not entry["code"].strip():
+        raise ValueError("Code cannot be empty")
+    if not isinstance(entry["pattern"], str):
+        raise ValueError("Pattern must be text")
+    if entry["event"] in {"message", "reply", "reaction_add", "reaction_remove"} and not entry["pattern"]:
+        raise ValueError("Pattern is required for this event")
+    if entry["match_type"] == "regex":
         try:
-            valid_channel_ids.append(int(channel_id))
-        except (TypeError, ValueError):
-            continue
-    entry["channel_ids"] = list(dict.fromkeys(valid_channel_ids))
-    entry["code"] = str(entry.get("code") or "")
-    entry["pattern"] = str(entry.get("pattern") or "")
-    entry["event"] = str(entry.get("event") or "message")
-    entry["match_type"] = str(entry.get("match_type") or "contains")
-    entry["enabled"] = bool(entry.get("enabled", True))
+            re.compile(entry["pattern"])
+        except re.error as exc:
+            raise ValueError(f"Invalid regex: {exc}") from exc
+    channels = entry["channel_ids"]
+    if not isinstance(channels, list):
+        raise ValueError("channel_ids must be an array of decimal strings")
+    if any(not isinstance(channel, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", channel) or int(channel) > 2**64 - 1 for channel in channels):
+        raise ValueError("channel_ids must contain valid decimal snowflake strings")
+    entry["channel_ids"] = list(dict.fromkeys(channels))
+    entry["operator_id"] = str(TRUSTED_SCRIPT_USER_ID)
     return entry
+
+
+def _script_entry_for_api(entry: dict) -> dict:
+    return {**entry, "channel_ids": [str(channel) for channel in entry.get("channel_ids", [])]}
 
 
 async def script_api_options(_request: web.Request) -> web.Response:
@@ -1294,6 +1306,12 @@ async def script_auth_login(request: web.Request) -> web.Response:
     if not client_id:
         return web.Response(text="Discord client id is not configured.", status=500)
 
+    now = time.monotonic()
+    for key, (expires, _) in list(oauth_states.items()):
+        if expires <= now:
+            del oauth_states[key]
+    state = secrets.token_urlsafe(32)
+    oauth_states[state] = (now + 600, return_to)
     auth_url = urllib.parse.urlparse("https://discord.com/oauth2/authorize")
     query = urllib.parse.urlencode(
         {
@@ -1302,10 +1320,18 @@ async def script_auth_login(request: web.Request) -> web.Response:
             "redirect_uri": _script_manager_callback_url(),
             "scope": "identify",
             "prompt": "consent",
-            "state": _script_manager_encode_state(return_to),
+            "state": state,
         }
     )
-    raise web.HTTPFound(f"{auth_url.scheme}://{auth_url.netloc}{auth_url.path}?{query}")
+    response = web.HTTPFound(f"{auth_url.scheme}://{auth_url.netloc}{auth_url.path}?{query}")
+    response.set_cookie(OAUTH_STATE_COOKIE, state, max_age=600, httponly=True, secure=True,
+                        samesite="Lax", path="/api/script-auth/callback")
+    raise response
+
+
+def _exchange_discord_code(token_request):
+    with urllib.request.urlopen(token_request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
 async def script_auth_callback(request: web.Request) -> web.Response:
@@ -1313,13 +1339,15 @@ async def script_auth_callback(request: web.Request) -> web.Response:
     state = request.query.get("state", "").strip()
     error = request.query.get("error", "").strip()
 
-    try:
-        return_to = _script_manager_decode_state(state) if state else _script_manager_default_return_url()
-    except Exception:
-        return_to = _script_manager_default_return_url()
-
+    cookie_state = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    if not state or not cookie_state or not hmac.compare_digest(state, cookie_state):
+        return web.Response(text="Invalid OAuth state. Start sign-in again.", status=400)
+    saved = oauth_states.pop(state, None)
+    if saved is None or saved[0] <= time.monotonic():
+        return web.Response(text="Expired or already used OAuth state. Start sign-in again.", status=400)
+    return_to = saved[1]
     if not _script_manager_is_allowed_return_url(return_to):
-        return_to = _script_manager_default_return_url()
+        return web.Response(text="Invalid return URL", status=400)
 
     if error:
         raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote(error)}")
@@ -1358,11 +1386,9 @@ async def script_auth_callback(request: web.Request) -> web.Response:
     )
 
     try:
-        with urllib.request.urlopen(token_request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        payload = await asyncio.to_thread(_exchange_discord_code, token_request)
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        logger.warning("Discord token exchange failed with status %s: %s", exc.code, body or "<empty body>")
+        logger.warning("Discord token exchange failed with status %s", exc.code)
         raise web.HTTPFound(f"{return_to}#oauth_error={urllib.parse.quote('token_exchange_failed')}")
     except Exception:
         logger.exception("Discord token exchange failed unexpectedly.")
@@ -1382,7 +1408,9 @@ async def script_auth_callback(request: web.Request) -> web.Response:
             "expires_in": expires_in,
         }
     )
-    raise web.HTTPFound(f"{return_to}#{fragment}")
+    response = web.HTTPFound(f"{return_to}#{fragment}")
+    response.del_cookie(OAUTH_STATE_COOKIE, path="/api/script-auth/callback")
+    raise response
 
 
 async def script_api_get_triggers(request: web.Request) -> web.Response:
@@ -1391,7 +1419,7 @@ async def script_api_get_triggers(request: web.Request) -> web.Response:
     if not allowed:
         return _script_api_response(request, {"error": error}, status=403 if error and "Unauthorized" not in error else 401)
 
-    return _script_api_response(request, {"guild_id": guild_id, "triggers": script_triggers.get(guild_id, {})})
+    return _script_api_response(request, {"guild_id": guild_id, "triggers": {name: _script_entry_for_api(entry) for name, entry in script_triggers.get(guild_id, {}).items()}})
 
 
 async def script_api_upsert_trigger(request: web.Request) -> web.Response:
@@ -1408,7 +1436,10 @@ async def script_api_upsert_trigger(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return _script_api_response(request, {"error": "Invalid JSON payload"}, status=400)
 
-    entry = _sanitize_script_entry(body)
+    try:
+        entry = _sanitize_script_entry(body)
+    except (ValueError, TypeError) as exc:
+        return _script_api_response(request, {"error": str(exc)}, status=400)
     async with script_api_lock:
         guild_triggers = script_triggers.setdefault(guild_id, {})
         guild_triggers[trigger_name] = entry
@@ -1443,6 +1474,8 @@ async def script_api_list_manageable_guilds(request: web.Request) -> web.Respons
 
     manageable = []
     user_id = str((identity or {}).get("id") or "").strip()
+    if user_id != str(TRUSTED_SCRIPT_USER_ID):
+        return _script_api_response(request, {"guilds": []})
     for guild in bot.guilds:
         guild_id = str(guild.id)
         if not user_id:
@@ -1518,10 +1551,10 @@ def message_trigger_match(entry: dict, message: discord.Message) -> Optional[re.
 
     match_type = str(entry.get("match_type") or "contains").lower()
     if match_type == "exact":
-        return re.match(r"^.*$", message.content) if message.content == pattern else None
+        return re.match(r"^.*$", message.content, re.DOTALL) if message.content == pattern else None
 
     if match_type == "contains":
-        return re.match(r"^.*$", message.content) if pattern in message.content else None
+        return re.match(r"^.*$", message.content, re.DOTALL) if pattern in message.content else None
 
     try:
         return re.search(pattern, message.content)
@@ -1536,10 +1569,10 @@ def trigger_match_text(entry: dict, text: str) -> Optional[re.Match]:
 
     match_type = str(entry.get("match_type") or "contains").lower()
     if match_type == "exact":
-        return re.match(r"^.*$", text) if text == pattern else None
+        return re.match(r"^.*$", text, re.DOTALL) if text == pattern else None
 
     if match_type == "contains":
-        return re.match(r"^.*$", text) if pattern in text else None
+        return re.match(r"^.*$", text, re.DOTALL) if pattern in text else None
 
     try:
         return re.search(pattern, text)
@@ -1600,7 +1633,7 @@ async def run_script_trigger(
     user: Optional[discord.abc.User] = None,
     member: Optional[discord.Member] = None,
 ) -> bool:
-    if not guild or not entry.get("enabled", True):
+    if not guild or not entry.get("enabled", True) or entry.get("operator_id") != str(TRUSTED_SCRIPT_USER_ID):
         return False
 
     code = str(entry.get("code") or "").strip()
@@ -2510,63 +2543,8 @@ async def run_script_trigger(
     def rename_thread(new_name: str):
         return _schedule(_rename_thread_async(new_name))
 
-    safe_builtins = {
-        "str": str,
-        "int": int,
-        "float": float,
-        "bool": bool,
-        "len": len,
-        "range": range,
-        "min": min,
-        "max": max,
-        "sum": sum,
-        "sorted": sorted,
-        "list": list,
-        "dict": dict,
-        "set": set,
-        "tuple": tuple,
-        "print": print,
-        "enumerate": enumerate,
-        "zip": zip,
-        "map": map,
-        "filter": filter,
-        "abs": abs,
-        "round": round,
-        "any": any,
-        "all": all,
-        "isinstance": isinstance,
-        "getattr": getattr,
-        "hasattr": hasattr,
-        "setattr": setattr,
-        "repr": repr,
-        "type": type,
-        # Exceptions — needed for try/except in user scripts
-        "Exception": Exception,
-        "BaseException": BaseException,
-        "ValueError": ValueError,
-        "TypeError": TypeError,
-        "KeyError": KeyError,
-        "AttributeError": AttributeError,
-        "IndexError": IndexError,
-        "RuntimeError": RuntimeError,
-        "StopIteration": StopIteration,
-        "StopAsyncIteration": StopAsyncIteration,
-        "ArithmeticError": ArithmeticError,
-        "ZeroDivisionError": ZeroDivisionError,
-        "LookupError": LookupError,
-        "NameError": NameError,
-        "UnicodeError": UnicodeError,
-        "True": True,
-        "False": False,
-        "None": None,
-    }
-
-    trusted_actor_id = source_author.id if source_author else None
-    is_trusted_user = trusted_actor_id == TRUSTED_SCRIPT_USER_ID
-    builtins_scope = builtins.__dict__ if is_trusted_user else safe_builtins
-
     globals_dict = {
-        "__builtins__": builtins_scope,
+        "__builtins__": builtins.__dict__,
         "send": send,
         "reply": reply,
         "react": react,
@@ -2617,16 +2595,14 @@ async def run_script_trigger(
         "asyncio": asyncio,
     }
 
-    if is_trusted_user:
-        globals_dict.update(
-            {
-                "bot": bot,
-                "discord": discord,
-                "os": os,
-                "datetime": datetime,
-                "timedelta": timedelta,
-            }
-        )
+    # Approved code executes with host capabilities. This is not a sandbox.
+    globals_dict.update({
+        "bot": bot,
+        "discord": discord,
+        "os": os,
+        "datetime": datetime,
+        "timedelta": timedelta,
+    })
 
     try:
         # Use one shared namespace so top-level defs remain visible to
@@ -3680,6 +3656,9 @@ script_group = app_commands.Group(
 
 
 async def reject_script_guild(interaction: discord.Interaction) -> bool:
+    if interaction.user.id != TRUSTED_SCRIPT_USER_ID:
+        await interaction.response.send_message("Only the configured host operator can manage Python scripts.", ephemeral=True)
+        return True
     if not script_guild_allowed(interaction.guild):
         try:
             if interaction.response.is_done():
@@ -3732,6 +3711,8 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
         if not interaction.guild:
             return await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
 
+        if await reject_script_guild(interaction):
+            return
         code_text = str(self.code.value or "").strip()
         if not code_text:
             return await interaction.response.send_message("❌ Code cannot be empty.", ephemeral=True)
@@ -3749,10 +3730,11 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
 
         entry.update(
             {
+                "operator_id": str(TRUSTED_SCRIPT_USER_ID),
                 "event": self.event_name,
                 "pattern": self.pattern,
                 "match_type": self.match_type,
-                "channel_ids": self.channel_ids,
+                "channel_ids": [str(channel) for channel in self.channel_ids],
                 "code": code_text,
                 "enabled": bool(self.enabled),
             }
@@ -4038,9 +4020,9 @@ async def script_docs(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="Trusted user override",
+        name="Host operator execution",
         value=(
-            f"User ID `{TRUSTED_SCRIPT_USER_ID}` runs with full Python builtins and extra modules: "
+            f"Only host operator `{TRUSTED_SCRIPT_USER_ID}` may approve scripts. Code runs with full host access, independent of event author. Re-save legacy scripts to approve them. Modules: "
             "`bot`, `discord`, `os`, `datetime`, `timedelta`."
         ),
         inline=False,
@@ -4164,7 +4146,6 @@ async def dispatch_script_triggers_for_event(
 async def on_message(message):
     is_bot_message = message.author.bot
     is_self_message = bot.user and message.author.id == bot.user.id
-    content_preview = (message.content or "").replace("\n", "\\n")[:240]
     reference_id = (
         message.reference.message_id
         if message.reference and message.reference.message_id
@@ -4174,7 +4155,7 @@ async def on_message(message):
     )
 
     logger.info(
-        "Observed message guild=%s channel_id=%s message_id=%s author_id=%s bot=%s self=%s reference_id=%s content=%r",
+        "Observed message guild=%s channel_id=%s message_id=%s author_id=%s bot=%s self=%s reference_id=%s",
         message.guild.id if message.guild else None,
         message.channel.id if message.channel else None,
         message.id,
@@ -4182,7 +4163,6 @@ async def on_message(message):
         is_bot_message,
         bool(is_self_message),
         reference_id,
-        content_preview,
     )
 
     if message.guild and message.reference:

@@ -53,8 +53,8 @@ When generating a script body:
 - End with `__script_async_entry__ = main()`.
 - `await` helper calls when order matters.
 - Use SmokeBot helpers instead of direct Discord API access.
-- Do not use imports unless you know the trusted-user override applies.
-- Do not assume full Python builtins are available.
+- Scripts require host-operator review and approval before execution.
+- Scripts have full host Python capabilities. Do not describe this runtime as isolated.
 
 Recommended code template:
 
@@ -159,27 +159,13 @@ All helpers below return an `asyncio.Task` because the runtime wraps them with `
 - `remove_role(member_id, role_id, reason='No reason provided')`
 - `clear_messages(amount, from_user_id=None, contains=None, starts_after=None, ends_before=None, include_bots=True, only_bots=False, attachments_only=False, role_id=None, scan_limit=None)`
 
-## Builtin Constraints
+## Host operator execution
 
-For normal script authors, the runtime only exposes a restricted builtin set. Safe assumptions:
+Scripts are Python code with full host access, not a sandbox. Only the configured host operator may create, update, enable or remove them through Discord or OAuth. The separately configured API key is also a host-operator credential. Do not share it with server managers.
 
-- Basic types and functions like `str`, `int`, `len`, `range`, `min`, `max`, `sum`, `sorted`, `list`, `dict`, `set`, `tuple`, `print`, `enumerate`, `zip`, `map`, `filter`, `abs`, `round`, `any`, `all`
-- Common exceptions like `Exception`, `ValueError`, `TypeError`, `KeyError`, `AttributeError`, `IndexError`, `RuntimeError`
+Every script must have an operator approval recorded by re-saving it. Legacy entries without approval do not execute. Review each legacy script before re-saving. Execution capability follows this approval, independent of the member whose event triggers the script, so the bundled spam detector can handle ordinary members.
 
-Do not assume these are available for non-trusted scripts:
-
-- Arbitrary imports
-- File I/O helpers like `open`
-- Direct access to `bot`, `discord`, `os`, `datetime`, `timedelta`
-
-## Trusted User Override
-
-One trusted user ID gets a wider runtime:
-
-- Full Python builtins
-- Extra globals: `bot`, `discord`, `os`, `datetime`, `timedelta`
-
-Unless explicitly told the script runs as that trusted user, generate for the restricted runtime.
+Full Python builtins and `bot`, `discord`, `os`, `datetime`, `timedelta` are available. Scripts can access files, credentials and the network. Only install code the host operator trusts.
 
 ## AI Generation Rules
 
@@ -225,7 +211,10 @@ Code:
 async def main():
     if member is None:
         return
-    await send(f"Welcome {member.mention}!")
+    WELCOME_CHANNEL_ID = 0  # Replace with the destination channel ID.
+    if not WELCOME_CHANNEL_ID:
+        raise ValueError("Configure WELCOME_CHANNEL_ID first")
+    await send(f"Welcome {member.mention}!", channel_id=WELCOME_CHANNEL_ID)
 
 
 __script_async_entry__ = main()
