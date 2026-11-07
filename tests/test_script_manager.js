@@ -15,10 +15,10 @@ class Element {
 (async()=>{
  const elements={}; const el=id=>elements[id]||(elements[id]=new Element());
  const storage=new Map([['smokebot-discord-access-token-v2','synthetic']]);
- const calls=[]; let pending;
+ const calls=[]; let pending; let pendingDelete;
  const harmless='<b>format marker</b>';
  const triggers={[harmless]:{event:'message',pattern:harmless,code:'pass',channel_ids:['123456789012345678']}};
- const fetch=async(url,opts={})=>{calls.push({url,opts});if(pending&&url.endsWith('/2')) return new Promise(r=>{pending.resolve=r;});return {ok:true,json:async()=>url.includes('users/@me')?{username:'synthetic'}:url.endsWith('/guilds')?{guilds:[{id:'1',name:'A'},{id:'2',name:'B'}]}:{triggers}};};
+ const fetch=async(url,opts={})=>{calls.push({url,opts});if(pendingDelete && opts.method==='DELETE')return new Promise(r=>{pendingDelete.resolve=r;});if(pending&&url.endsWith('/2')) return new Promise(r=>{pending.resolve=r;});return {ok:true,json:async()=>url.includes('users/@me')?{username:'synthetic'}:url.endsWith('/guilds')?{guilds:[{id:'1',name:'A'},{id:'2',name:'B'}]}:{triggers}};};
  let ready;const context={document:{getElementById:el,createElement:t=>new Element(t),addEventListener:(e,fn)=>{ready=fn;}},window:{location:{origin:'https://example.com',pathname:'/scripts/',hash:''},confirm:()=>true},localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch,URL,URLSearchParams,history:{replaceState(){}},console};
  vm.runInNewContext(fs.readFileSync('docs/assets/js/script-manager.js','utf8'),context);ready();
  const tick=()=>new Promise(r=>setImmediate(r));await tick();await tick();
@@ -46,5 +46,20 @@ class Element {
  el('quick_template').value='welcome_message';await el('quick_template').fire('change');
  assert(el('code').value.includes('channel_id=WELCOME_CHANNEL_ID'));
  assert(!el('code').value.includes('send_in_thread'));
+ // An older guild's deletion must not reset or refresh a newer editor.
+ pending=null;
+ el('guild_id').value='1';await el('guild_id').fire('change');
+ await el('api-config-form').fire('submit');
+ pendingDelete={};
+ const deleting=list.fire('click',{target:{closest:()=>({dataset:{action:'delete',name:harmless}})}});
+ await tick();
+ el('guild_id').value='2';await el('guild_id').fire('change');
+ await el('api-config-form').fire('submit');
+ await list.fire('click',{target:{closest:()=>({dataset:{action:'edit',name:harmless}})}});
+ el('code').value='B unsaved draft';
+ const bLoads=calls.filter(call=>call.url.endsWith('/2') && !call.opts.method).length;
+ pendingDelete.resolve({ok:true,json:async()=>({})});await deleting;
+ assert.equal(el('code').value,'B unsaved draft','old deletion must preserve the newly selected server editor');
+ assert.equal(calls.filter(call=>call.url.endsWith('/2') && !call.opts.method).length,bLoads,'old deletion must not refresh a different server');
  console.log('script manager DOM regressions passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
