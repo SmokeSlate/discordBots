@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import builtins
+import copy
 import hmac
 import json
 import logging
@@ -21,7 +22,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import discord
@@ -135,12 +137,40 @@ def save_giveaways():
 # Giveaway Helpers and Views
 # =====================================================
 
+def parse_utc_timestamp(value):
+    dt = datetime.fromisoformat(value) if value else datetime.now(timezone.utc)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def timeout_deadline(minutes):
+    if not 0 <= minutes <= 28 * 24 * 60:
+        raise ValueError("Timeout must be between 0 and 40320 minutes")
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes) if minutes else None
+
+
+async def send_paginated_embed(interaction, source):
+    pages = []
+    page = discord.Embed(title=source.title, color=source.color)
+    for field in source.fields:
+        name, value = str(field.name)[:256] or "-", str(field.value)[:1024] or "-"
+        if len(page.fields) >= 25 or len(page) + len(name) + len(value) > 5800:
+            pages.append(page)
+            page = discord.Embed(title=source.title, color=source.color)
+        page.add_field(name=name, value=value, inline=field.inline)
+    pages.append(page)
+    for index, page in enumerate(pages):
+        if index == 0:
+            await interaction.response.send_message(embed=page, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=page, ephemeral=True)
+
+
 def build_giveaway_embed(data: dict) -> discord.Embed:
     ended = data.get("ended", False)
     try:
-        end_dt = datetime.fromisoformat(data.get("end_time", datetime.utcnow().isoformat()))
+        end_dt = parse_utc_timestamp(data.get("end_time"))
     except ValueError:
-        end_dt = datetime.utcnow()
+        end_dt = datetime.now(timezone.utc)
     end_ts = int(end_dt.timestamp())
 
     color = discord.Color.red() if ended else discord.Color.blurple()
@@ -289,11 +319,11 @@ async def schedule_giveaway_end(giveaway_id: str):
         return
 
     try:
-        end_dt = datetime.fromisoformat(data.get("end_time", datetime.utcnow().isoformat()))
+        end_dt = parse_utc_timestamp(data.get("end_time"))
     except ValueError:
-        end_dt = datetime.utcnow()
+        end_dt = datetime.now(timezone.utc)
 
-    delay = (end_dt - datetime.utcnow()).total_seconds()
+    delay = (end_dt - datetime.now(timezone.utc)).total_seconds()
     if delay > 0:
         await asyncio.sleep(delay)
 
@@ -760,7 +790,7 @@ def autoreply_on_cooldown(guild_id: str, name: str, bucket: Optional[str], secon
     if not bucket or seconds <= 0:
         return False
 
-    now = datetime.utcnow().timestamp()
+    now = datetime.now(timezone.utc).timestamp()
     trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
     last = trigger_cooldowns.get(bucket)
     if last and now - last < seconds:
@@ -772,7 +802,7 @@ def mark_autoreply_cooldown(guild_id: str, name: str, bucket: Optional[str]):
     if not bucket:
         return
     trigger_cooldowns = autoreply_cooldowns.setdefault(guild_id, {}).setdefault(name, {})
-    trigger_cooldowns[bucket] = datetime.utcnow().timestamp()
+    trigger_cooldowns[bucket] = datetime.now(timezone.utc).timestamp()
 
 
 async def render_auto_reply_content(
@@ -1868,10 +1898,10 @@ async def run_script_trigger(
         if not member:
             return None
 
-        if minutes_int <= 0:
-            until = None
-        else:
-            until = datetime.utcnow() + timedelta(minutes=minutes_int)
+        try:
+            until = timeout_deadline(minutes_int)
+        except ValueError:
+            return None
 
         try:
             await member.timeout(until, reason=str(reason))
@@ -2697,10 +2727,38 @@ def default_ticket_categories():
         }
     }
 
-ticket_categories = read_json("ticket_categories.json", default_ticket_categories)
+def migrate_ticket_categories(raw):
+    if isinstance(raw, dict) and raw.get("version") == 2 and isinstance(raw.get("guilds"), dict):
+        return raw
+    # Preserve the old shared configuration as a template, then copy per guild.
+    return {"version": 2, "defaults": copy.deepcopy(raw if isinstance(raw, dict) else default_ticket_categories()), "guilds": {}}
 
-def save_ticket_categories(categories):
-    write_json("ticket_categories.json", categories)
+
+ticket_categories = migrate_ticket_categories(read_json("ticket_categories.json", default_ticket_categories))
+
+
+def get_ticket_categories(guild_id=None):
+    if guild_id is None:
+        return ticket_categories["defaults"]
+    return ticket_categories["guilds"].setdefault(str(guild_id), copy.deepcopy(ticket_categories["defaults"]))
+
+
+def save_ticket_categories():
+    write_json("ticket_categories.json", ticket_categories)
+
+
+async def resolve_ticket_thread(guild, thread_id, data):
+    thread = guild.get_thread(int(thread_id))
+    if thread is not None:
+        return thread
+    try:
+        return await guild.fetch_channel(int(thread_id))
+    except discord.NotFound:
+        data["status"] = "deleted"
+        save_ticket_data()
+        return None
+    # Forbidden and transient errors must not be interpreted as a deleted ticket.
+
 
 
 async def perform_auto_update_check():
@@ -2818,25 +2876,29 @@ async def on_ready():
 # =====================================================
 
 class TicketCategorySelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, guild_id=None):
         options = []
-        for key, data in ticket_categories.items():
+        for key, data in list(get_ticket_categories(guild_id).items())[:25]:
             try:
                 options.append(discord.SelectOption(
-                    label=data.get("label", key),
+                    label=str(data.get("label", key))[:100],
                     description=(data.get("desc") or "")[:100],
                     emoji=data.get("emoji"),
-                    value=key
+                    value=str(key)[:100]
                 ))
             except Exception:
                 # Fallback if emoji invalid etc.
                 options.append(discord.SelectOption(
-                    label=data.get("label", key),
+                    label=str(data.get("label", key))[:100],
                     description=(data.get("desc") or "")[:100],
-                    value=key
+                    value=str(key)[:100]
                 ))
 
+        unavailable = not options
+        if unavailable:
+            options = [discord.SelectOption(label="No categories configured", value="unavailable")]
         super().__init__(
+            disabled=unavailable,
             placeholder="Choose a ticket category...",
             options=options,
             min_values=1,
@@ -2846,8 +2908,12 @@ class TicketCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected_category = self.values[0]
-        cat = ticket_categories.get(selected_category)
-        category_display = cat["label"] if cat else selected_category
+        if not interaction.guild:
+            return await interaction.response.send_message("Use this menu in a server.", ephemeral=True)
+        cat = get_ticket_categories(interaction.guild.id).get(selected_category)
+        if not cat:
+            return await interaction.response.send_message("This category is no longer available. Ask staff to post a new menu.", ephemeral=True)
+        category_display = cat["label"]
 
         guild_id = str(interaction.guild.id)
         user_id = str(interaction.user.id)
@@ -2856,7 +2922,10 @@ class TicketCategorySelect(discord.ui.Select):
         if guild_id in ticket_data:
             for thread_id, data in ticket_data[guild_id].items():
                 if data['user_id'] == user_id and data['status'] == 'open':
-                    thread = interaction.guild.get_thread(int(thread_id))
+                    try:
+                        thread = await resolve_ticket_thread(interaction.guild, thread_id, data)
+                    except (discord.Forbidden, discord.HTTPException):
+                        return await interaction.response.send_message("An existing open ticket could not be checked. Ask staff for help before creating another.", ephemeral=True)
                     if thread:
                         return await interaction.response.send_message(
                             f"❌ You already have an open ticket: {thread.mention}",
@@ -2878,7 +2947,7 @@ class TicketCategorySelect(discord.ui.Select):
                 'user_id': user_id,
                 'category': selected_category,
                 'status': 'open',
-                'created_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
                 'channel_id': str(interaction.channel.id)
             }
             save_ticket_data()
@@ -2914,9 +2983,9 @@ class TicketCategorySelect(discord.ui.Select):
             )
 
 class TicketMenuView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, guild_id=None):
         super().__init__(timeout=None)
-        self.add_item(TicketCategorySelect())
+        self.add_item(TicketCategorySelect(guild_id))
 
 class TicketControlView(discord.ui.View):
     def __init__(self):
@@ -2937,14 +3006,14 @@ class TicketControlView(discord.ui.View):
             return await interaction.response.send_message("❌ You don't have permission to close this ticket!", ephemeral=True)
 
         info['status'] = 'closed'
-        info['closed_at'] = datetime.utcnow().isoformat()
+        info['closed_at'] = datetime.now(timezone.utc).isoformat()
         info['closed_by'] = str(interaction.user.id)
         save_ticket_data()
 
         embed = discord.Embed(
             title="🔒 Ticket Closed",
             description=f"This ticket has been closed by {interaction.user.mention}.\n"
-                        f"Closed at: <t:{int(datetime.utcnow().timestamp())}:f>",
+                        f"Closed at: <t:{int(datetime.now(timezone.utc).timestamp())}:f>",
             color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed)
@@ -2973,16 +3042,22 @@ class TicketNoteModal(discord.ui.Modal, title="Add Ticket Note"):
             title="📋 Staff Note",
             description=self.note.value,
             color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         embed.set_footer(text=f"Added by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="ticket", description="Create a ticket menu")
+@app_commands.guild_only()
 async def create_ticket_menu(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
+    categories = get_ticket_categories(interaction.guild.id)
+    if not categories or len(categories) > 25 or any(not 1 <= len(str(key)) <= 100 or not 1 <= len(str(value.get("label", key))) <= 100 for key, value in categories.items()):
+        return await interaction.response.send_message("Configure 1 to 25 categories with keys and labels of at most 100 characters before posting a menu.", ephemeral=True)
     # Defer ephemerally so no public 'used /ticket' message appears
     await interaction.response.defer(ephemeral=True)
 
@@ -2994,12 +3069,15 @@ async def create_ticket_menu(interaction: discord.Interaction):
     )
     embed.set_footer(text="Select a category from the dropdown menu below")
 
-    view = TicketMenuView()
+    view = TicketMenuView(interaction.guild.id)
     await interaction.channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Ticket menu posted.", ephemeral=True)
 
 @bot.tree.command(name="ticketstats", description="View ticket statistics")
+@app_commands.guild_only()
 async def ticket_stats(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
@@ -3020,7 +3098,7 @@ async def ticket_stats(interaction: discord.Interaction):
 
     category_text = ""
     for cat_key, count in categories_count.items():
-        label = ticket_categories.get(cat_key, {}).get("label", cat_key)
+        label = get_ticket_categories(interaction.guild.id).get(cat_key, {}).get("label", cat_key)
         category_text += f"{label}: {count}\n"
 
     embed = discord.Embed(title="🎫 Ticket Statistics", color=discord.Color.blue())
@@ -3031,7 +3109,10 @@ async def ticket_stats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="listtickets", description="List all open tickets")
+@app_commands.guild_only()
 async def list_tickets(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
@@ -3042,15 +3123,19 @@ async def list_tickets(interaction: discord.Interaction):
     open_tickets = []
     for thread_id, data in ticket_data[guild_id].items():
         if data['status'] == 'open':
-            thread = interaction.guild.get_thread(int(thread_id))
+            try:
+                thread = await resolve_ticket_thread(interaction.guild, thread_id, data)
+            except (discord.Forbidden, discord.HTTPException):
+                open_tickets.append(f"Ticket `{thread_id}` remains open, but Discord could not return its thread.")
+                continue
             if thread:
                 user = bot.get_user(int(data['user_id']))
-                category_label = ticket_categories.get(data['category'], {}).get("label", data['category'])
+                category_label = get_ticket_categories(interaction.guild.id).get(data['category'], {}).get("label", data['category'])
                 user_name = user.display_name if user else "Unknown User"
                 try:
-                    dt = datetime.fromisoformat(data['created_at'])
+                    dt = parse_utc_timestamp(data['created_at'])
                 except Exception:
-                    dt = datetime.utcnow()
+                    dt = datetime.now(timezone.utc)
                 created_ts = int(dt.timestamp())
                 open_tickets.append(f"{thread.mention} - {category_label}\n👤 {user_name} • <t:{created_ts}:R>")
 
@@ -3075,35 +3160,55 @@ async def list_tickets(interaction: discord.Interaction):
     description="Short description",
     emoji="Emoji character (optional, like 🛠️)"
 )
+@app_commands.guild_only()
 async def add_ticket_category(interaction: discord.Interaction, key: str, label: str, description: str, emoji: Optional[str] = None):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
-    ticket_categories[key] = {"label": label, "desc": description, "emoji": emoji or ""}
-    save_ticket_categories(ticket_categories)
+    categories = get_ticket_categories(interaction.guild.id)
+    if not 1 <= len(key) <= 100 or any(char.isspace() for char in key) or not 1 <= len(label) <= 100 or len(description) > 100:
+        return await interaction.response.send_message("Category keys and labels require 1 to 100 characters, keys cannot contain spaces, and descriptions allow at most 100 characters.", ephemeral=True)
+    if key not in categories and len(categories) >= 25:
+        return await interaction.response.send_message("A ticket menu supports at most 25 categories.", ephemeral=True)
+    if emoji:
+        try:
+            discord.PartialEmoji.from_str(emoji)
+        except (TypeError, ValueError):
+            return await interaction.response.send_message("Invalid emoji.", ephemeral=True)
+    categories[key] = {"label": label, "desc": description, "emoji": emoji or ""}
+    save_ticket_categories()
     await interaction.response.send_message(f"✅ Added category `{label}` (`{key}`)", ephemeral=True)
 
 @bot.tree.command(name="removeticketcategory", description="Remove a ticket category")
 @app_commands.describe(key="The category key to remove")
+@app_commands.guild_only()
 async def remove_ticket_category(interaction: discord.Interaction, key: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
-    if ticket_categories.pop(key, None):
-        save_ticket_categories(ticket_categories)
+    if get_ticket_categories(interaction.guild.id).pop(key, None):
+        save_ticket_categories()
         await interaction.response.send_message(f"✅ Removed category `{key}`", ephemeral=True)
     else:
         await interaction.response.send_message("❌ Category not found.", ephemeral=True)
 
 @bot.tree.command(name="listticketcategories", description="List all ticket categories")
+@app_commands.guild_only()
 async def list_ticket_categories(interaction: discord.Interaction):
-    if not ticket_categories:
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+    categories = get_ticket_categories(interaction.guild.id)
+    if not categories:
         return await interaction.response.send_message("No categories set.", ephemeral=True)
     embed = discord.Embed(title="🎫 Ticket Categories", color=discord.Color.blue())
-    for k, v in ticket_categories.items():
+    for k, v in categories.items():
         name = f"{(v.get('emoji')+' ') if v.get('emoji') else ''}{v.get('label', k)} (`{k}`)"
         embed.add_field(name=name, value=v.get("desc", ""), inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await send_paginated_embed(interaction, embed)
 
 # =====================================================
 # Giveaway Command
@@ -3118,6 +3223,7 @@ async def list_ticket_categories(interaction: discord.Interaction):
     channel="Channel to post the giveaway message in",
     details="Additional details shown in the giveaway embed"
 )
+@app_commands.guild_only()
 async def start_giveaway(
     interaction: discord.Interaction,
     prize: str,
@@ -3127,6 +3233,8 @@ async def start_giveaway(
     channel: Optional[discord.TextChannel] = None,
     details: Optional[str] = None
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to start giveaways.", ephemeral=True)
 
@@ -3141,7 +3249,7 @@ async def start_giveaway(
     if target_channel is None:
         return await interaction.followup.send("❌ Unable to determine the channel to post the giveaway.", ephemeral=True)
 
-    end_time = datetime.utcnow() + timedelta(minutes=duration_minutes)
+    end_time = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
 
     data = {
         "guild_id": str(interaction.guild.id),
@@ -3250,7 +3358,10 @@ class SnippetEditModal(discord.ui.Modal):
 
 @bot.tree.command(name="addsnippet", description="Add a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)", content="Content to send")
+@app_commands.guild_only()
 async def add_snippet(interaction: discord.Interaction, trigger: str, content: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
@@ -3262,7 +3373,10 @@ async def add_snippet(interaction: discord.Interaction, trigger: str, content: s
 
 @bot.tree.command(name="adddynamicsnippet", description="Add a dynamic snippet with placeholders {1}, {2}...")
 @app_commands.describe(trigger="Trigger word (no !)", content="Content with placeholders like {1}, {2}, ...")
+@app_commands.guild_only()
 async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, content: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
@@ -3274,7 +3388,10 @@ async def add_dynamic_snippet(interaction: discord.Interaction, trigger: str, co
 
 @bot.tree.command(name="editdynamicsnippet", description="Edit a dynamic snippet (or toggle dynamic mode)")
 @app_commands.describe(trigger="Trigger word (no !)", content="New content", dynamic="True/False for dynamic mode")
+@app_commands.guild_only()
 async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, content: str, dynamic: Optional[bool] = True):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
@@ -3297,9 +3414,12 @@ async def edit_dynamic_snippet(interaction: discord.Interaction, trigger: str, c
     trigger="Trigger word (no !)",
     dynamic="Optional override for dynamic mode (leave blank to keep current)",
 )
+@app_commands.guild_only()
 async def edit_snippet_form(
     interaction: discord.Interaction, trigger: str, dynamic: Optional[bool] = None
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
@@ -3329,7 +3449,10 @@ async def edit_snippet_form(
 
 @bot.tree.command(name="removesnippet", description="Remove a static snippet")
 @app_commands.describe(trigger="Trigger word (no !)")
+@app_commands.guild_only()
 async def remove_snippet(interaction: discord.Interaction, trigger: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
@@ -3342,7 +3465,10 @@ async def remove_snippet(interaction: discord.Interaction, trigger: str):
 
 @bot.tree.command(name="removedynamicsnippet", description="Remove a dynamic snippet")
 @app_commands.describe(trigger="Trigger word (no !)")
+@app_commands.guild_only()
 async def remove_dynamic_snippet(interaction: discord.Interaction, trigger: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     trigger = trigger.lstrip("!")
@@ -3354,7 +3480,10 @@ async def remove_dynamic_snippet(interaction: discord.Interaction, trigger: str)
     await interaction.response.send_message("❌ Snippet not found.", ephemeral=True)
 
 @bot.tree.command(name="listsnippets", description="List snippets for this server")
+@app_commands.guild_only()
 async def list_snippets(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     gid = str(interaction.guild.id)
     if gid not in snippets or not snippets[gid]:
         return await interaction.response.send_message("No snippets found.", ephemeral=True)
@@ -3363,7 +3492,7 @@ async def list_snippets(interaction: discord.Interaction):
         label = "(Dynamic)" if data.get("dynamic") else "(Static)"
         preview = data["content"][:50] + "..." if len(data["content"]) > 50 else data["content"]
         embed.add_field(name=f"!{trig} {label}", value=preview or "-", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await send_paginated_embed(interaction, embed)
 
 
 # =====================================================
@@ -3374,6 +3503,7 @@ async def list_snippets(interaction: discord.Interaction):
 autoreply_group = app_commands.Group(
     name="autoreply",
     description="Manage auto replies",
+    guild_only=True,
 )
 
 
@@ -3392,6 +3522,7 @@ autoreply_group = app_commands.Group(
         app_commands.Choice(name="Contains", value="contains"),
     ]
 )
+@app_commands.guild_only()
 async def set_autoreply(
     interaction: discord.Interaction,
     name: str,
@@ -3402,6 +3533,8 @@ async def set_autoreply(
     snippet: Optional[str] = None,
     case_sensitive: Optional[bool] = None,
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
@@ -3477,7 +3610,10 @@ async def set_autoreply(
 
 @autoreply_group.command(name="remove", description="Delete an auto reply")
 @app_commands.describe(name="Name of the auto reply to remove")
+@app_commands.guild_only()
 async def remove_autoreply(interaction: discord.Interaction, name: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
@@ -3496,7 +3632,10 @@ async def remove_autoreply(interaction: discord.Interaction, name: str):
 
 
 @autoreply_group.command(name="list", description="List auto replies for this server")
+@app_commands.guild_only()
 async def list_autoreplies(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     gid = str(interaction.guild.id)
     guild_replies = auto_replies.get(gid)
 
@@ -3539,7 +3678,7 @@ async def list_autoreplies(interaction: discord.Interaction):
             inline=False,
         )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await send_paginated_embed(interaction, embed)
 
 
 @app_commands.describe(
@@ -3564,6 +3703,7 @@ async def list_autoreplies(interaction: discord.Interaction):
     ]
 )
 @autoreply_group.command(name="options", description="Configure filters and cooldowns for an auto reply")
+@app_commands.guild_only()
 async def autoreply_options(
     interaction: discord.Interaction,
     name: str,
@@ -3574,6 +3714,8 @@ async def autoreply_options(
     cooldown: Optional[str] = None,
     cooldown_scope: Optional[app_commands.Choice[str]] = None,
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
@@ -3676,6 +3818,7 @@ bot.tree.add_command(autoreply_group)
 script_group = app_commands.Group(
     name="script",
     description="Manage Python script triggers",
+    guild_only=True,
 )
 
 
@@ -3789,6 +3932,7 @@ class ScriptTriggerModal(discord.ui.Modal, title="Script Trigger"):
         app_commands.Choice(name="Exact", value="exact"),
     ]
 )
+@app_commands.guild_only()
 async def set_script_trigger(
     interaction: discord.Interaction,
     name: str,
@@ -3798,6 +3942,8 @@ async def set_script_trigger(
     channels: Optional[str] = None,
     enabled: Optional[bool] = True,
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if await reject_script_guild(interaction):
@@ -3845,7 +3991,10 @@ async def set_script_trigger(
 
 @script_group.command(name="remove", description="Remove a script trigger")
 @app_commands.describe(name="Name of the script trigger to remove")
+@app_commands.guild_only()
 async def remove_script_trigger(interaction: discord.Interaction, name: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if await reject_script_guild(interaction):
@@ -3866,7 +4015,10 @@ async def remove_script_trigger(interaction: discord.Interaction, name: str):
 
 
 @script_group.command(name="list", description="List script triggers for this server")
+@app_commands.guild_only()
 async def list_script_triggers(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if await reject_script_guild(interaction):
         return
 
@@ -3899,12 +4051,15 @@ async def list_script_triggers(interaction: discord.Interaction):
             summary += f"\nCode: {preview}..."
         embed.add_field(name=name, value=summary, inline=False)
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await send_paginated_embed(interaction, embed)
 
 
 @script_group.command(name="enable", description="Enable a script trigger")
 @app_commands.describe(name="Name of the script trigger to enable")
+@app_commands.guild_only()
 async def enable_script_trigger(interaction: discord.Interaction, name: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if await reject_script_guild(interaction):
@@ -3928,7 +4083,10 @@ async def enable_script_trigger(interaction: discord.Interaction, name: str):
 
 @script_group.command(name="disable", description="Disable a script trigger")
 @app_commands.describe(name="Name of the script trigger to disable")
+@app_commands.guild_only()
 async def disable_script_trigger(interaction: discord.Interaction, name: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ No permission.", ephemeral=True)
     if await reject_script_guild(interaction):
@@ -3951,7 +4109,10 @@ async def disable_script_trigger(interaction: discord.Interaction, name: str):
 
 
 @script_group.command(name="docs", description="Show script helper documentation")
+@app_commands.guild_only()
 async def script_docs(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if await reject_script_guild(interaction):
         return
 
@@ -4300,7 +4461,10 @@ async def handle_pin_repost(message):
 
 @bot.tree.command(name="setpin", description="Set a pinned message that stays at the bottom of the channel")
 @app_commands.describe(content="The text content for the pinned message")
+@app_commands.guild_only()
 async def set_pin(interaction: discord.Interaction, content: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4339,7 +4503,10 @@ async def set_pin(interaction: discord.Interaction, content: str):
 
 @bot.tree.command(name="removepin", description="Remove a pinned message (current channel)")
 @app_commands.describe(message_id="Optional: specific pinned message ID. If omitted, removes this channel's tracked pin.")
+@app_commands.guild_only()
 async def remove_pin(interaction: discord.Interaction, message_id: Optional[str] = None):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
@@ -4383,7 +4550,10 @@ async def remove_pin(interaction: discord.Interaction, message_id: Optional[str]
         return await interaction.response.send_message(f"❌ Failed to remove pinned message: {e}", ephemeral=True)
 
 @bot.tree.command(name="listpins", description="Show the pinned message(s) for this channel")
+@app_commands.guild_only()
 async def list_pins(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     pinned_messages = load_pinned_messages()
     channel_id = str(interaction.channel.id)
 
@@ -4412,7 +4582,10 @@ async def list_pins(interaction: discord.Interaction):
     emoji="The emoji to react with",
     role="The role to give when reacting"
 )
+@app_commands.guild_only()
 async def reaction_role(interaction: discord.Interaction, message_id: str, emoji: str, role: discord.Role):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4444,14 +4617,17 @@ async def reaction_role(interaction: discord.Interaction, message_id: str, emoji
     message_id="The ID of the message to remove reaction role from",
     emoji="The emoji to remove"
 )
+@app_commands.guild_only()
 async def remove_reaction_role(interaction: discord.Interaction, message_id: str, emoji: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
     try:
         msg_id = int(message_id)
         key = f"{msg_id}_{emoji}"
-        if key in reaction_roles:
+        if key in reaction_roles and str(reaction_roles[key].get("guild_id")) == str(interaction.guild.id):
             del reaction_roles[key]
             save_reaction_roles()
             await interaction.response.send_message("✅ Reaction role removed!", ephemeral=True)
@@ -4460,64 +4636,52 @@ async def remove_reaction_role(interaction: discord.Interaction, message_id: str
     except ValueError:
         await interaction.response.send_message("❌ Invalid message ID!", ephemeral=True)
 
-@bot.event
-async def on_reaction_add(reaction, user):
-    if user.bot:
+async def handle_raw_reaction(payload, *, adding):
+    if payload.guild_id is None:
         return
-    key = f"{reaction.message.id}_{str(reaction.emoji)}"
-    if key in reaction_roles:
-        role_data = reaction_roles[key]
-        guild = bot.get_guild(role_data['guild_id'])
-        if guild:
-            role = guild.get_role(role_data['role_id'])
-            member = guild.get_member(user.id)
-            if role and member:
-                try:
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+    member = getattr(payload, "member", None) or guild.get_member(payload.user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+    if member.bot:
+        return
+    role_data = reaction_roles.get(f"{payload.message_id}_{payload.emoji}")
+    if role_data and str(role_data.get("guild_id")) == str(payload.guild_id):
+        role = guild.get_role(int(role_data["role_id"]))
+        if role:
+            try:
+                if adding:
                     await member.add_roles(role)
-                    print(f"✅ Added {role.name} to {member.display_name}")
-                except discord.Forbidden:
-                    print(f"❌ No permission to add {role.name} to {member.display_name}")
-                except discord.HTTPException as e:
-                    print(f"❌ Failed to add role: {e}")
-            else:
-                if not role:
-                    print(f"❌ Role not found for reaction role: {role_data['role_id']}")
-                if not member:
-                    print(f"❌ Member not found: {user.id}")
+                else:
+                    await member.remove_roles(role)
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("Reaction role update failed for message %s", payload.message_id)
+    # Fetch only when a configured reaction script needs the message context.
+    event_name = "reaction_add" if adding else "reaction_remove"
+    if not any(entry.get("enabled", True) and entry.get("event") == event_name for entry in script_triggers.get(str(guild.id), {}).values()):
+        return
+    try:
+        channel = guild.get_channel_or_thread(payload.channel_id) or await guild.fetch_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
+    await dispatch_script_triggers_for_event(guild, event_name=event_name,
+        reaction=SimpleNamespace(message=message, emoji=payload.emoji), user=member)
 
-    await dispatch_script_triggers_for_event(
-        reaction.message.guild,
-        event_name="reaction_add",
-        reaction=reaction,
-        user=user,
-    )
 
 @bot.event
-async def on_reaction_remove(reaction, user):
-    if user.bot:
-        return
-    key = f"{reaction.message.id}_{str(reaction.emoji)}"
-    if key in reaction_roles:
-        role_data = reaction_roles[key]
-        guild = bot.get_guild(role_data['guild_id'])
-        if guild:
-            role = guild.get_role(role_data['role_id'])
-            member = guild.get_member(user.id)
-            if role and member:
-                try:
-                    await member.remove_roles(role)
-                    print(f"✅ Removed {role.name} from {member.display_name}")
-                except discord.Forbidden:
-                    print(f"❌ No permission to remove {role.name} from {member.display_name}")
-                except discord.HTTPException as e:
-                    print(f"❌ Failed to remove role: {e}")
+async def on_raw_reaction_add(payload):
+    await handle_raw_reaction(payload, adding=True)
 
-    await dispatch_script_triggers_for_event(
-        reaction.message.guild,
-        event_name="reaction_remove",
-        reaction=reaction,
-        user=user,
-    )
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    await handle_raw_reaction(payload, adding=False)
 
 
 @bot.event
@@ -4549,11 +4713,16 @@ async def on_member_remove(member: discord.Member):
     duration="Duration in minutes",
     reason="Reason for the timeout"
 )
+@app_commands.guild_only()
 async def timeout_member(interaction: discord.Interaction, member: discord.Member, duration: int, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
+    if not 1 <= duration <= 40320:
+        return await interaction.response.send_message("Timeout must be between 1 and 40320 minutes.", ephemeral=True)
     try:
-        await member.timeout(datetime.utcnow() + timedelta(minutes=duration), reason=reason)
+        await member.timeout(timeout_deadline(duration), reason=reason)
         await interaction.response.send_message(f"✅ {member.mention} has been timed out for {duration} minutes. Reason: {reason}", ephemeral=True)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to timeout members!", ephemeral=True)
@@ -4562,7 +4731,10 @@ async def timeout_member(interaction: discord.Interaction, member: discord.Membe
 
 @bot.tree.command(name="untimeout", description="Remove timeout from a member")
 @app_commands.describe(member="The member to remove timeout from", reason="Reason for removing timeout")
+@app_commands.guild_only()
 async def untimeout_member(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4575,7 +4747,10 @@ async def untimeout_member(interaction: discord.Interaction, member: discord.Mem
 
 @bot.tree.command(name="kick", description="Kick a member from the server")
 @app_commands.describe(member="The member to kick", reason="Reason for the kick")
+@app_commands.guild_only()
 async def kick_member(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4588,7 +4763,10 @@ async def kick_member(interaction: discord.Interaction, member: discord.Member, 
 
 @bot.tree.command(name="ban", description="Ban a member from the server")
 @app_commands.describe(member="The member to ban", reason="Reason for the ban")
+@app_commands.guild_only()
 async def ban_member(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4601,7 +4779,10 @@ async def ban_member(interaction: discord.Interaction, member: discord.Member, r
 
 @bot.tree.command(name="unban", description="Unban a user from the server")
 @app_commands.describe(user_id="The ID of the user to unban", reason="Reason for the unban")
+@app_commands.guild_only()
 async def unban_member(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4620,7 +4801,10 @@ async def unban_member(interaction: discord.Interaction, user_id: str, reason: s
 
 @bot.tree.command(name="slowmode", description="Set slowmode for the current channel")
 @app_commands.describe(seconds="Slowmode delay in seconds (0 to disable)")
+@app_commands.guild_only()
 async def set_slowmode(interaction: discord.Interaction, seconds: int):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4636,7 +4820,10 @@ async def set_slowmode(interaction: discord.Interaction, seconds: int):
 
 @bot.tree.command(name="addrole", description="Add a role to a member")
 @app_commands.describe(member="The member to add the role to", role="The role to add", reason="Reason for adding the role")
+@app_commands.guild_only()
 async def add_role(interaction: discord.Interaction, member: discord.Member, role: discord.Role, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4649,7 +4836,10 @@ async def add_role(interaction: discord.Interaction, member: discord.Member, rol
 
 @bot.tree.command(name="removerole", description="Remove a role from a member")
 @app_commands.describe(member="The member to remove the role from", role="The role to remove", reason="Reason for removing the role")
+@app_commands.guild_only()
 async def remove_role(interaction: discord.Interaction, member: discord.Member, role: discord.Role, reason: str = "No reason provided"):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
     try:
@@ -4666,12 +4856,15 @@ async def remove_role(interaction: discord.Interaction, member: discord.Member, 
     include_bots="Whether to include bots",
     reason="Reason for adding the role"
 )
+@app_commands.guild_only()
 async def add_role_all(
     interaction: discord.Interaction,
     role: discord.Role,
     include_bots: bool = False,
     reason: str = "No reason provided",
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message(
             "❌ You don't have permission to use this command!", ephemeral=True
@@ -4705,6 +4898,7 @@ async def add_role_all(
     role="Only delete messages from members with this role",
     scan_limit="How many recent messages to scan (default: amount*10, max 5000)"
 )
+@app_commands.guild_only()
 async def clear_messages(
     interaction: discord.Interaction,
     amount: int,
@@ -4718,6 +4912,8 @@ async def clear_messages(
     role: Optional[discord.Role] = None,
     scan_limit: Optional[int] = None,
 ):
+    if not interaction.guild:
+        return await interaction.response.send_message("Use this command in a server.", ephemeral=True)
     if not has_mod_permissions_or_override(interaction):
         return await interaction.response.send_message("❌ You don't have permission to use this command!", ephemeral=True)
 
