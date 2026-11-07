@@ -977,7 +977,7 @@ def _script_manager_is_allowed_return_url(url: str) -> bool:
         allowed = urllib.parse.urlparse(_script_manager_site_origin())
     except Exception:
         return False
-    return parsed.scheme in {"http", "https"} and parsed.netloc == allowed.netloc
+    return allowed.scheme in {"http", "https"} and parsed.scheme == allowed.scheme and parsed.netloc == allowed.netloc
 
 
 def _script_api_response_headers(request: web.Request) -> Dict[str, str]:
