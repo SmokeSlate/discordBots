@@ -30,6 +30,8 @@ SmokeBot only accesses data that Discord makes available to bots in servers wher
 
 SmokeBot requires access to message content in servers where administrators enable snippet functionality or pin reposting. This access is limited to reading messages in channels where the bot has permission so that it can detect snippet triggers and keep tracked pins up to date.
 
+Default event logs record message IDs and routing metadata, not message content. Host-operator scripts have full host access and can explicitly store or transmit data; operators must review their scripts and document any additional retention. Existing host log files are not deleted by this change.
+
 ## 2. How We Use Information
 The information described above is used solely to:
 
