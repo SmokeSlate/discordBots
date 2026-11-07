@@ -14,6 +14,12 @@ class UpdateStagingTests(unittest.TestCase):
             for name,value in originals.items():(bot/name).write_text(value)
             script=(Path(__file__).resolve().parents[1]/'SmokeBot/update_bot.sh').read_text()
             script=re.sub(r'^BOT_DIR=.*$', 'BOT_DIR="'+str(bot)+'"',script,flags=re.M)
+            if mode == 'startup':
+                # Replace the fixture clock, not the updater's liveness/rollback logic.
+                # A fixed wall-clock pause can expire before a fake launcher is
+                # scheduled under load. Reap that known fake child first instead.
+                clock = 'sleep() { if [[ "$1" == 1 ]]; then wait "$NEW_PID" || true; else command sleep "$@"; fi; }'
+                script = script.replace('set -Eeuo pipefail', 'set -Eeuo pipefail\n' + clock, 1)
             target=root/'update.sh';target.write_text(script)
             curl=f'''#!{sys.executable}
 import pathlib,sys
