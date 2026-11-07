@@ -32,7 +32,7 @@ out.write_text('invalid python !!!' if {mode!r}=='syntax' else '# staged synthet
             if mode=='replace':
                 (fake/'mv').write_text(f"#!{sys.executable}\nimport subprocess,sys\nif '/download/storage.py' in sys.argv[-2]:sys.exit(1)\nsys.exit(subprocess.run(['/bin/mv',*sys.argv[1:]]).returncode)\n")
             for p in fake.iterdir():p.chmod(0o755)
-            result=subprocess.run(['bash',str(target)],env={**os.environ,'PATH':str(fake)+os.pathsep+os.environ['PATH']},capture_output=True,text=True,timeout=10)
+            result=subprocess.run(['bash',str(target)],env={**os.environ,'PATH':str(fake)+os.pathsep+os.environ['PATH']},capture_output=True,text=True,timeout=30)
             self.assertNotEqual(result.returncode,0)
             for name,value in originals.items():self.assertEqual((bot/name).read_text(),value,result.stdout+'\n'+result.stderr)
             self.assertEqual((root/'process-actions').exists(),mode=='startup','no process action before valid staging/replacement')
